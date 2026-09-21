@@ -31,7 +31,7 @@ Do not re-derive these; they were measured on this machine.
 | --- | --- |
 | `src/types.ts` | The contract: `Framework`, `TestCase`, `Answer`, `Verdict`, `Selection`, `testId` |
 | `src/diff.ts` | `git diff` to changed line ranges and the raw diff text |
-| `src/framework.ts` | Test-file discovery and per-file framework detection |
+| `src/framework.ts` | Test-file discovery, grammar choice, per-file framework detection |
 | `src/extract.ts` | ast-grep rules and `extractTests` |
 | `src/state.ts` | Diff to a Jev `state` inside the 32Ki budget |
 | `src/questions.ts` | `TestCase` to a score question; answer parsing |
@@ -727,7 +727,8 @@ git commit -m "feat: read changed line ranges and the diff text from git"
 ```ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { detectFramework, isTestFile } from "../src/framework.ts";
+import { Lang } from "@ast-grep/napi";
+import { detectFramework, isTestFile, langFor } from "../src/framework.ts";
 
 test("detectFramework reads the import source", () => {
   assert.equal(detectFramework("import { it } from 'vitest';"), "vitest");
@@ -748,6 +749,27 @@ test("detectFramework returns unknown when nothing is imported", () => {
 test("detectFramework prefers playwright when a file imports both", () => {
   const src = "import { test } from '@playwright/test';\nimport { expect } from 'vitest';";
   assert.equal(detectFramework(src), "playwright");
+});
+
+test("detectFramework ignores an import inside a string literal", () => {
+  // This tool's own test files carry fixture sources as template literals. A
+  // regular expression over the text reads those as real imports, which made
+  // this repository look like it held Playwright specs it does not have.
+  const src = [
+    'import { test } from "node:test";',
+    "const fixture = `",
+    '  import { test } from "@playwright/test";',
+    "`;",
+  ].join("\n");
+  assert.equal(detectFramework(src), "node");
+});
+
+test("langFor picks the grammar from the extension", () => {
+  assert.equal(langFor("a.tsx"), Lang.Tsx);
+  assert.equal(langFor("a.jsx"), Lang.Tsx);
+  assert.equal(langFor("a.ts"), Lang.TypeScript);
+  assert.equal(langFor("a.mts"), Lang.TypeScript);
+  assert.equal(langFor("a.js"), Lang.JavaScript);
 });
 
 test("isTestFile accepts the usual spellings and rejects sources", () => {
@@ -779,9 +801,18 @@ Expected: FAIL, `Cannot find module '../src/framework.ts'`.
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { parse, Lang } from "@ast-grep/napi";
 import type { Framework } from "./types.ts";
 
 const execFileAsync = promisify(execFile);
+
+/** The grammar to parse a file under, by extension. */
+export function langFor(file: string): Lang {
+  if (/\.tsx$/.test(file)) return Lang.Tsx;
+  if (/\.jsx$/.test(file)) return Lang.Tsx;
+  if (/\.[cm]?ts$/.test(file)) return Lang.TypeScript;
+  return Lang.JavaScript;
+}
 
 /** `foo.test.ts`, `foo.spec.tsx`, `foo.test.mjs`, and the rest of the family. */
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
@@ -790,27 +821,63 @@ export function isTestFile(file: string): boolean {
   return TEST_FILE.test(file);
 }
 
+/** `require("x")`, with the specifier captured. */
+const REQUIRE_RULE = {
+  kind: "call_expression",
+  all: [
+    { has: { field: "function", regex: "^require$" } },
+    { has: { field: "arguments", has: { nthChild: 1, kind: "string", pattern: "$SPEC" } } },
+  ],
+};
+
+/** A string literal's text, without its quotes. */
+function unquote(raw: string): string {
+  return raw.slice(1, -1);
+}
+
 /**
  * Every module specifier the file imports or requires.
  *
- * A regular expression rather than a parse: the extractor already parses the
- * file, but it does so per language and after this decision has been made,
- * and the specifier of an import is one of the few things in JavaScript a
- * regular expression reads correctly.
+ * A parse, not a regular expression. The first version of this matched
+ * specifiers in the text, which reads an import written inside a string
+ * literal as a real one -- and this tool's own test files carry fixture
+ * sources as template literals, so its own repository looked like it held
+ * Playwright specs it does not have. There is no way to tell code from a
+ * string without parsing, so it parses.
+ *
+ * The file is parsed once here and once more by the extractor. Tree-sitter is
+ * fast enough that the second parse does not show up next to reading the file
+ * off disk, and threading a parsed tree between the two would put the grammar
+ * choice in the caller.
  */
-const SPECIFIER = /(?:from|import|require)\s*\(?\s*["']([^"']+)["']/g;
+function specifiers(source: string, file: string): string[] {
+  const root = parse(langFor(file), source).root();
+  const out: string[] = [];
+  for (const kind of ["import_statement", "export_statement"]) {
+    for (const node of root.findAll({ rule: { kind } as never })) {
+      const src = node.field("source")?.text();
+      if (src) out.push(unquote(src));
+    }
+  }
+  for (const node of root.findAll({ rule: REQUIRE_RULE as never })) {
+    const spec = node.getMatch("SPEC")?.text();
+    if (spec) out.push(unquote(spec));
+  }
+  return out;
+}
 
 /**
  * Playwright wins a tie because a spec that imports `expect` from elsewhere
  * is still a Playwright spec, and selecting a Playwright test by name is the
  * one thing that does not work.
+ *
+ * `file` only picks the grammar; the default suits a bare source string.
  */
-export function detectFramework(source: string): Framework {
+export function detectFramework(source: string, file = "a.ts"): Framework {
   let vitest = false;
   let node = false;
   let jest = false;
-  for (const m of source.matchAll(SPECIFIER)) {
-    const spec = m[1]!;
+  for (const spec of specifiers(source, file)) {
     if (spec === "@playwright/test" || spec.startsWith("@playwright/test/")) return "playwright";
     if (spec === "vitest" || spec.startsWith("vitest/")) vitest = true;
     else if (spec === "node:test") node = true;
@@ -838,7 +905,7 @@ export async function findTestFiles(cwd: string, paths: string[] = []): Promise<
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `node --test test/framework.test.ts`
-Expected: PASS, `pass 5`.
+Expected: PASS, `pass 7`.
 
 - [ ] **Step 5: Commit**
 
@@ -974,8 +1041,9 @@ Expected: FAIL, `Cannot find module '../src/extract.ts'`.
  * misses, and a matcher that misses produces no error -- only a test that
  * quietly never runs.
  */
-import { parse, Lang } from "@ast-grep/napi";
+import { parse } from "@ast-grep/napi";
 import type { SgNode } from "@ast-grep/napi";
+import { langFor } from "./framework.ts";
 import type { Framework, TestCase } from "./types.ts";
 
 /** `describe(...)` and its spellings; Playwright's `test.describe` with its own modifiers. */
@@ -1062,14 +1130,6 @@ const SUITE_RULE = {
     { has: { field: "arguments", has: { any: FUNCTION_KINDS, pattern: "$BODY" } } },
   ],
 };
-
-/** The grammar to parse a file under, by extension. */
-export function langFor(file: string): Lang {
-  if (/\.tsx$/.test(file)) return Lang.Tsx;
-  if (/\.jsx$/.test(file)) return Lang.Tsx;
-  if (/\.[cm]?ts$/.test(file)) return Lang.TypeScript;
-  return Lang.JavaScript;
-}
 
 /**
  * The text of a string literal, or null when the title is not statically
@@ -2397,7 +2457,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   const all: TestCase[] = [];
   for (const file of files) {
     const source = await readFile(join(cwd, file), "utf8");
-    const framework = detectFramework(source);
+    const framework = detectFramework(source, file);
     if (opts.format && framework !== opts.format) continue;
     all.push(...extractTests(source, file, framework));
   }
