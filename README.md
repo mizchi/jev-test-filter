@@ -50,19 +50,18 @@ Real output, on this repository:
 
 ```
 $ jev-test-filter --base HEAD~1 --format node --exec -- node --test
-jev-test-filter: 8/89 tests selected (pattern)
-✔ the node:test pattern selects exactly the chosen tests under the space spelling (0.920834ms)
-✔ playwright is selected by location and every line points at a real test (1.260125ms)
-▶ Cart
-  ▶ applyDiscount
-    ✔ clamps at zero (0.204041ms)
-    ✔ rounds half up (0.039334ms)
-  ✔ totals (0.033417ms)
-✔ Cart (0.732333ms)
-ℹ tests 8
-ℹ pass 8
+jev-test-filter: 3/110 tests selected (pattern)
+✔ parseCliArgs reads the flags and the paths (0.852375ms)
+✔ a bare --replay means the record the last run left (0.121834ms)
+✔ --replay still takes an explicit path either way round (0.067125ms)
+ℹ tests 3
+ℹ pass 3
 ℹ fail 0
 ```
+
+The commit under review changed how `--replay` parses its argument. Of 110
+tests it picked the three about argument parsing, and left the other 107 —
+extraction, gating, the Jev client, the Rust and Go paths — alone.
 
 **2. `--json`: the whole scoring.** Every test, with its score, its confidence
 and the reason it was kept or dropped. This is the shape to read, to log, or
@@ -74,35 +73,59 @@ $ jev-test-filter --base main --json
 {
   "framework": "node",
   "mode": "pattern",
-  "argv": ["--test-name-pattern", "^(?:Cart totals|...)$", "test/fixtures/node/cart.test.cjs"],
+  "argv": ["--test-name-pattern", "^(?:parseCliArgs reads the flags and the paths|...)$", "test/cli.test.ts"],
   "fallback": null,
-  "selected": 8,
-  "total": 89,
+  "selected": 3,
+  "total": 110,
   "spent": {
     "calls": 1,
-    "inputTokens": 20550,
-    "outputTokens": 1517,
-    "ms": 650,
-    "retried": 3,
+    "inputTokens": 23423,
+    "outputTokens": 1874,
+    "ms": 1296,
+    "retried": 0,
     "rateLimited": 0,
     "tokensPerSecond": 200000,
     "splits": 0,
-    "usd": 0.0008631
+    "usd": 0.000983766
   },
   "tests": [
     {
       "file": "test/cli.test.ts",
+      "name": "a bare --replay means the record the last run left",
+      "line": 89,
+      "selected": true,
+      "reason": "touched",
+      "score": 1.74,
+      "confidence": 0.19
+    },
+    {
+      "file": "test/cli.test.ts",
       "name": "parseCliArgs reads the flags and the paths",
-      "pattern_name": "parseCliArgs reads the flags and the paths",
       "line": 27,
+      "selected": true,
+      "reason": "unsure",
+      "score": 1.12,
+      "confidence": 0
+    },
+    {
+      "file": "test/cargo.test.ts",
+      "name": "parseCargoList takes the test lines and nothing else",
+      "line": 5,
       "selected": false,
       "reason": "below",
-      "score": 0.37,
-      "confidence": 0.63
+      "score": 0.01,
+      "confidence": 0.99
     }
   ]
 }
 ```
+
+Three real entries out of the 110, and each shows a different mechanism. The
+first scored 1.74 — under the cutoff of 2 — and ran anyway, because its own
+body is inside the diff; `touched` costs no tokens and is decided before any
+question is asked. The second scored 1.12 with a confidence of 0, and
+`unsure` is the rule that confidence routes rather than gates: an uncertain
+verdict near the cutoff runs. The third is what a clear no looks like.
 
 **3. Arguments on stdout.** With neither `--exec` nor `--json`, the tool writes
 the runner arguments to stdout, shell-quoted, and nothing else; progress goes
@@ -111,8 +134,8 @@ pasting the arguments into a command by hand.
 
 ```
 $ jev-test-filter --base HEAD~1 --format node
-jev-test-filter: 8/89 tests selected (pattern)
---test-name-pattern '^(?:Cart totals|Cart applyDiscount rounds half up)$' test/fixtures/node/cart.test.cjs
+jev-test-filter: 3/110 tests selected (pattern)
+--test-name-pattern '^(?:parseCliArgs reads the flags and the paths|a bare --replay means the record the last run left|--replay still takes an explicit path either way round)$' test/cli.test.ts
 ```
 
 A test name contains spaces, so the arguments have to be quoted, and that
@@ -415,11 +438,11 @@ Every run that reaches Jev writes its answers to
 the network, which is how you tune `--cutoff` for free:
 
 ```
-$ jev-test-filter --replay .jev-test-filter/last.json > /dev/null
-jev-test-filter: 8/89 tests selected (pattern)
+$ jev-test-filter --replay > /dev/null
+jev-test-filter: 3/110 tests selected (pattern)
 
-$ jev-test-filter --replay .jev-test-filter/last.json --cutoff 1.0 > /dev/null
-jev-test-filter: 16/89 tests selected (pattern)
+$ jev-test-filter --replay --cutoff 1.0 > /dev/null
+jev-test-filter: 5/110 tests selected (pattern)
 ```
 
 A replay reports `"spent": null` because it spent nothing, and it needs no API
@@ -435,14 +458,21 @@ your `.gitignore`. It never holds the API key.
 
 ## Cost and latency
 
-Measured once, on this repository: 89 tests, the diff of one commit,
-`--format node`. One request, 20,550 input tokens, 1,517 output tokens,
-650 ms, **$0.00086**. It selected 8 of the 89 tests, and running the arguments
-it printed ran exactly those 8.
+Measured on this repository: 110 tests, the diff of one commit, `--format
+node`. One request, 23,423 input tokens, 1,874 output tokens, **1,296 ms**,
+**$0.00098**. It selected 3 of the 110, and running the arguments it printed
+ran exactly those 3.
 
 That is one measurement on one repository, not a promise. Cost scales with the
-size of the diff plus the number of tests, since the diff is sent once and each
-test is one question.
+size of the diff plus the number of tests — the diff is sent once and each test
+is one question, at roughly fifty tokens each — and **not** with how long the
+tests take to run.
+
+Which is the whole argument for using it. A second and a tenth of a cent buys
+nothing against a unit suite that finishes in 200 ms; against a Playwright
+suite, a compiled `cargo test`, or anything that starts a database, it is
+returned many times over. Work out what one test costs you before wiring this
+in.
 
 ## Known limitations
 

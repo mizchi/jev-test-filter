@@ -8,7 +8,7 @@ description: "Use when a test suite is too slow to run whole on every change and
 Scores every test in a repository against a `git diff` and emits the filter
 arguments the runner already understands. One `state` (the diff) plus one
 question per test, answered by [Jev](https://typesafe.ai) in a single round
-trip — about a second and under a cent for a suite of ninety.
+trip — measured at 1.3 seconds and $0.00098 for a suite of 110.
 
 Selection is an **optimization, never a correctness gate.** Every failure path
 — no API key, a Jev error, a missing answer, no tests found, a diff too large
@@ -115,8 +115,9 @@ stable selection matters, take it once and re-derive it with `--replay`.
 
 ## When it does not pay
 
-The scoring costs about a second and a fraction of a cent. It is worth it when
-a test costs more than that to run — Playwright suites, integration tests that
+The scoring costs about a second and a tenth of a cent, and that cost scales
+with the number of tests and the size of the diff — **not** with how long the
+tests take. It is worth it when a test costs more than that to run — Playwright suites, integration tests that
 start a database, anything compiled. A millisecond-per-test unit suite will not
 notice the saving, and the latency may exceed it.
 

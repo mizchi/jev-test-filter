@@ -51,9 +51,9 @@ answers. `--cutoff` on a replay is how you tune without paying again.
 
 ## Cost
 
-One request per run, roughly 20k input tokens for a suite of ninety tests, a
-second of wall time, under a tenth of a cent. It scales with the number of
-tests and the size of the diff, not with how long the tests take.
+One request per run. Measured on jev-test-filter's own repository: 110 tests,
+one commit's diff, 23,423 input tokens, 1,296 ms, $0.00098. It scales with the
+number of tests and the size of the diff, not with how long the tests take.
 
 Which is the whole argument for using it: the scoring costs the same whether
 your suite takes ten seconds or forty minutes.
