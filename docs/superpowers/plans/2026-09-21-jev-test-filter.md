@@ -1639,7 +1639,7 @@ test("vitest gets the files and one anchored alternation", () => {
   const c = mk("y.test.ts", ["Tax", "rounds"]);
   const f = buildFilter(sel([a, b, c], [a, c]), "vitest");
   assert.equal(f.mode, "pattern");
-  assert.deepEqual(f.argv, ["x.test.ts", "y.test.ts", "-t", "^(?:Cart > totals|Tax > rounds)$"]);
+  assert.deepEqual(f.argv, ["-t", "^(?:Cart > totals|Tax > rounds)$", "x.test.ts", "y.test.ts"]);
 });
 
 test("the generated pattern matches exactly the selected names", () => {
@@ -1651,7 +1651,7 @@ test("the generated pattern matches exactly the selected names", () => {
   ];
   const selected = [all[0]!, all[1]!];
   const f = buildFilter(sel(all, selected), "vitest");
-  const re = new RegExp(f.argv.at(-1)!);
+  const re = new RegExp(f.argv[1]!);
   for (const t of all) {
     assert.equal(re.test(fullName(t)), selected.includes(t), `pattern is wrong for ${fullName(t)}`);
   }
@@ -1662,8 +1662,16 @@ test("node:test gets a single --test-name-pattern with the space spelling", () =
   const b = mk("x.test.ts", ["Cart", "empties"], { framework: "node" });
   const f = buildFilter(sel([a, b], [a]), "node");
   assert.equal(f.mode, "pattern");
-  assert.deepEqual(f.argv, ["x.test.ts", "--test-name-pattern", "^(?:Cart totals)$"]);
+  assert.deepEqual(f.argv, ["--test-name-pattern", "^(?:Cart totals)$", "x.test.ts"]);
   assert.equal(f.argv.filter((s) => s === "--test-name-pattern").length, 1);
+});
+
+test("the name pattern precedes the files, because node ignores it otherwise", () => {
+  const a = mk("x.test.ts", ["Cart", "totals"], { framework: "node" });
+  const b = mk("x.test.ts", ["Cart", "empties"], { framework: "node" });
+  const f = buildFilter(sel([a, b], [a]), "node");
+  assert.equal(f.argv[0], "--test-name-pattern");
+  assert.equal(f.argv.at(-1), "x.test.ts");
 });
 
 test("playwright is selected by file and line", () => {
@@ -1816,14 +1824,18 @@ export function buildFilter(sel: Selection, framework: Framework, { fileThreshol
 
   const names = [...new Set(selected.map(fullName))];
   const pattern = `^(?:${names.map(escapeRegExp).join("|")})$`;
-  return { mode: "pattern", argv: [...files, flag, pattern] };
+  // The flag goes BEFORE the files, and that is not a style choice. Node's
+  // test runner silently ignores `--test-name-pattern` when it follows a
+  // positional: `node --test a.test.js --test-name-pattern X` runs the whole
+  // file and exits 0. Vitest accepts either order, so one order serves both.
+  return { mode: "pattern", argv: [flag, pattern, ...files] };
 }
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `node --test test/filter.test.ts`
-Expected: PASS, `pass 11`.
+Expected: PASS, `pass 12`.
 
 - [ ] **Step 5: Commit**
 
@@ -2965,6 +2977,7 @@ test.describe("Login", () => {
 ```ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { extractTests } from "../src/extract.ts";
@@ -3001,7 +3014,7 @@ test("the vitest pattern selects exactly the chosen tests under vitest's own spe
   const selected = [all[0]!, all[3]!];
   const f = buildFilter(sel(all, selected), "vitest");
   assert.equal(f.mode, "pattern");
-  const re = new RegExp(f.argv.at(-1)!);
+  const re = new RegExp(f.argv[1]!);
   // vitest joins a full name with " > ".
   for (const t of all) {
     assert.equal(re.test(t.titlePath.join(" > ")), selected.includes(t), fullName(t));
@@ -3014,7 +3027,7 @@ test("the node:test pattern selects exactly the chosen tests under the space spe
   const selected = [all[1]!];
   const f = buildFilter(sel(all, selected), "node");
   assert.equal(f.argv.filter((a) => a === "--test-name-pattern").length, 1);
-  const re = new RegExp(f.argv.at(-1)!);
+  const re = new RegExp(f.argv[1]!);
   // node:test joins a full name with a single space.
   for (const t of all) {
     assert.equal(re.test(t.titlePath.join(" ")), selected.includes(t), t.titlePath.join(" "));
@@ -3022,6 +3035,27 @@ test("the node:test pattern selects exactly the chosen tests under the space spe
   // And it must not select a suite, which would run every test under it.
   assert.equal(re.test("Cart"), false);
   assert.equal(re.test("Cart applyDiscount"), false);
+});
+
+test("node:test really honours the generated filter, in a real process", async () => {
+  const all = await load("node/cart.test.js");
+  const f = buildFilter(sel(all, [all[1]!]), "node");
+  assert.equal(f.mode, "pattern");
+
+  // The only check in the suite that runs the runner. A pattern the runner
+  // does not apply is invisible to every other test here: it produces a green
+  // run of the WRONG tests. Node silently ignores `--test-name-pattern` when
+  // it follows a positional, which is why `buildFilter` puts the flag first,
+  // and this is what holds that ordering in place.
+  const res = spawnSync(process.execPath, ["--test", ...f.argv], {
+    cwd: join(HERE, ".."),
+    encoding: "utf8",
+  });
+
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /rounds half up/);
+  assert.doesNotMatch(res.stdout, /clamps at zero/);
+  assert.doesNotMatch(res.stdout, /totals/);
 });
 
 test("playwright is selected by location and every line points at a real test", async () => {
@@ -3037,7 +3071,7 @@ test("playwright is selected by location and every line points at a real test", 
 - [ ] **Step 3: Run the test to verify it fails, then passes**
 
 Run: `node --test test/e2e.test.ts`
-Expected first: FAIL on the fixture paths or counts. Fix the fixture, not the matcher. Then: PASS, `pass 3`.
+Expected first: FAIL on the fixture paths or counts. Fix the fixture, not the matcher. Then: PASS, `pass 4`.
 
 - [ ] **Step 4: Verify the patterns against the real runners by hand, once**
 
@@ -3046,7 +3080,7 @@ These are not automated — they need the runners installed — but run them onc
 ```bash
 cd $(mktemp -d) && npm init -y >/dev/null && npm i -D vitest >/dev/null
 cp <repo>/test/fixtures/vitest/cart.test.ts .
-npx vitest run -t '^(?:Cart > applyDiscount > clamps at zero|top level)$' --reporter=verbose
+npx vitest run -t '^(?:Cart > applyDiscount > clamps at zero|top level)$' cart.test.ts --reporter=verbose
 ```
 
 Expected: 2 passed, 2 skipped.
