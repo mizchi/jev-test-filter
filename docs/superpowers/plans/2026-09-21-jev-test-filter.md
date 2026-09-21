@@ -1609,9 +1609,18 @@ test("node:test gets a single --test-name-pattern with the space spelling", () =
 test("playwright is selected by file and line", () => {
   const a = mk("e2e/a.spec.ts", ["Login", "succeeds"], { framework: "playwright", line: 4 });
   const b = mk("e2e/a.spec.ts", ["Login", "fails"], { framework: "playwright", line: 9 });
-  const f = buildFilter(sel([a, b], [a, b]), "playwright");
+  const c = mk("e2e/b.spec.ts", ["Signup", "succeeds"], { framework: "playwright", line: 3 });
+  const f = buildFilter(sel([a, b, c], [a, c]), "playwright");
   assert.equal(f.mode, "locations");
-  assert.deepEqual(f.argv, ["e2e/a.spec.ts:4", "e2e/a.spec.ts:9"]);
+  assert.deepEqual(f.argv, ["e2e/a.spec.ts:4", "e2e/b.spec.ts:3"]);
+});
+
+test("selecting every playwright test means no arguments, not a list of locations", () => {
+  const a = mk("e2e/a.spec.ts", ["Login", "succeeds"], { framework: "playwright", line: 4 });
+  const b = mk("e2e/a.spec.ts", ["Login", "fails"], { framework: "playwright", line: 9 });
+  const f = buildFilter(sel([a, b], [a, b]), "playwright");
+  assert.equal(f.mode, "all");
+  assert.deepEqual(f.argv, []);
 });
 
 test("selecting everything means no arguments at all", () => {
@@ -1722,6 +1731,11 @@ function uniqueFiles(tests: TestCase[]): string[] {
 
 export function buildFilter(sel: Selection, framework: Framework, { fileThreshold = 0.8 }: FilterOptions = {}): FilterArgs {
   const { selected, all } = sel;
+  // Both of these come before the per-framework dispatch on purpose. When
+  // every test is selected, no arguments is not merely shorter than naming
+  // them all -- it is the same run, and for Playwright it is the difference
+  // between one command and one argument per test. When none is selected
+  // there is nothing any framework could be asked to run.
   if (selected.length === 0) return { mode: "none", argv: [] };
   if (selected.length === all.length) return { mode: "all", argv: [] };
 
@@ -1749,7 +1763,7 @@ export function buildFilter(sel: Selection, framework: Framework, { fileThreshol
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `node --test test/filter.test.ts`
-Expected: PASS, `pass 10`.
+Expected: PASS, `pass 11`.
 
 - [ ] **Step 5: Commit**
 
