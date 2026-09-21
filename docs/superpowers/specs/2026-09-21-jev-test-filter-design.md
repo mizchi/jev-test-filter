@@ -160,12 +160,19 @@ jev-test-filter [--base <ref>] [--staged] [paths...]
   --exec -- <cmd...>      append the selection to <cmd...> and run it
   --json                  every test with its score, confidence and verdict
   --replay [file]         re-gate a recorded run at today's cutoffs; no API call
-  --cutoff <n> --with-source --dry-run --concurrency <n>
+  --cutoff <n> --dry-run --concurrency <n>
 ```
 
 Regex metacharacters in test names are escaped. Above a selection rate of 80%
 the name pattern is dropped and the selection falls back to whole files, so a
 run that keeps most of the suite does not carry a pathological alternation.
+
+## Deliberately not in the first version
+
+Sending the test's body alongside its name would very likely score better, and
+it is the first thing to measure once the tool is in use. It is left out here
+because it multiplies the question cost by an order of magnitude and the name
+plus the path is the cheaper hypothesis to falsify first.
 
 ## Testing
 
