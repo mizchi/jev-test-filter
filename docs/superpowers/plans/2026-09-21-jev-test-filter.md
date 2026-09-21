@@ -942,7 +942,7 @@ test.describe("Login", () => {
 });
 
 test("extractTests unescapes a quoted title", () => {
-  const src = "import { it } from 'vitest';\nit('it\\\\'s fine', () => {});";
+  const src = "import { it } from 'vitest';\nit('it\\'s fine', () => {});";
   const found = extractTests(src, "a.test.ts", "vitest");
   assert.deepEqual(found[0]!.titlePath, ["it's fine"]);
 });
