@@ -24,11 +24,14 @@ import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
 import { displayName } from "./questions.ts";
 import { fullName } from "./filter.ts";
-import { loadRecord, replay, run, saveRecord } from "./run.ts";
+import { loadRecord, RECORD_DIR, RECORD_FILE, replay, run, saveRecord } from "./run.ts";
 import type { RunRecord, RunResult } from "./run.ts";
 import type { Framework } from "./types.ts";
 
 const FORMATS: readonly string[] = ["vitest", "jest", "node", "playwright", "rust", "go", "auto"];
+
+/** Where a run leaves its answers, and what a bare `--replay` means. */
+export const DEFAULT_RECORD_PATH = `${RECORD_DIR}/${RECORD_FILE}`;
 
 export interface CliArgs {
   base: string | null;
@@ -58,8 +61,18 @@ export function parseCliArgs(argv: string[]): CliArgs {
     if (exec.length === 0) throw new Error("--exec needs a command, e.g. --exec -- vitest run");
   }
 
+  // `--replay` may be given without a path. parseArgs has no notion of an
+  // optional value -- a bare one is an error, and only `--replay=` reaches a
+  // default -- so a bare one is rewritten before parseArgs sees it. A path is
+  // a path; anything starting with `-` is the next option.
+  const args = own.map((a, i) =>
+    a === "--replay" && (i === own.length - 1 || own[i + 1]!.startsWith("-"))
+      ? `--replay=${DEFAULT_RECORD_PATH}`
+      : a,
+  );
+
   const { values, positionals } = parseArgs({
-    args: own,
+    args,
     allowPositionals: true,
     options: {
       base: { type: "string" },
@@ -226,7 +239,7 @@ async function main(): Promise<number> {
 
   let res: RunResult;
   if (args.replayPath !== null) {
-    const record = await loadRecord(args.replayPath || ".jev-test-filter/last.json");
+    const record = await loadRecord(args.replayPath);
     const selection = replay(record, args.cutoff === undefined ? {} : { cutoff: args.cutoff });
     const { buildFilter } = await import("./filter.ts");
     res = {

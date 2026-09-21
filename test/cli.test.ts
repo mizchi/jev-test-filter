@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseCliArgs, renderLine, renderJson, execArgv, shouldSaveRecord, stdoutExitCode } from "../src/cli.ts";
+import { parseCliArgs, renderLine, renderJson, execArgv, shouldSaveRecord, stdoutExitCode, DEFAULT_RECORD_PATH } from "../src/cli.ts";
 import type { RunResult } from "../src/run.ts";
 import type { TestCase } from "../src/types.ts";
 
@@ -84,4 +84,14 @@ test("renderJson reports every test with its reason", () => {
   assert.equal(tests.length, 1);
   assert.equal(tests[0]!.reason, "scored");
   assert.equal(tests[0]!.name, "hot");
+});
+
+test("a bare --replay means the record the last run left", () => {
+  assert.equal(parseCliArgs(["--replay"]).replayPath, DEFAULT_RECORD_PATH);
+  assert.equal(parseCliArgs(["--replay", "--cutoff", "1"]).replayPath, DEFAULT_RECORD_PATH);
+});
+
+test("--replay still takes an explicit path either way round", () => {
+  assert.equal(parseCliArgs(["--replay", "old.json"]).replayPath, "old.json");
+  assert.equal(parseCliArgs(["--replay=old.json"]).replayPath, "old.json");
 });
