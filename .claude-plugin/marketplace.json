@@ -1,0 +1,14 @@
+{
+  "name": "jev-test-filter",
+  "description": "jev-test-filter: run only the tests a change can break",
+  "owner": { "name": "mizchi", "url": "https://github.com/mizchi" },
+  "plugins": [
+    {
+      "name": "jev-test-filter",
+      "description": "Pick the tests a diff can plausibly break, across six runners, and hand the runner its own filter arguments",
+      "version": "0.1.0",
+      "source": "./",
+      "author": { "name": "mizchi" }
+    }
+  ]
+}

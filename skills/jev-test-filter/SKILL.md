@@ -1,0 +1,128 @@
+---
+name: jev-test-filter
+description: "Use when a test suite is too slow to run whole on every change and you want to run only the tests a diff can plausibly break, when wiring test selection into CI or a pre-push hook, or when composing a `jev-test-filter` command for vitest, jest, node:test, Playwright, `cargo test` or `go test`. Triggers: `jev-test-filter`, `.jev-test-filter/last.json`, `TYPESAFE_API_KEY`, `--test-name-pattern`, `-t '^(?:...)$'`, `--exact`, `go test -run`, and questions like 'only run the tests affected by this change', 'why did my -t pattern match nothing', 'which tests does this PR need'. Read it BEFORE hand-writing a runner filter argument from a selection: the full-name spelling differs per runner and a wrong one fails silently."
+---
+
+# jev-test-filter
+
+Scores every test in a repository against a `git diff` and emits the filter
+arguments the runner already understands. One `state` (the diff) plus one
+question per test, answered by [Jev](https://typesafe.ai) in a single round
+trip — about a second and under a cent for a suite of ninety.
+
+Selection is an **optimization, never a correctness gate.** Every failure path
+— no API key, a Jev error, a missing answer, no tests found, a diff too large
+to send whole — falls back to running everything and says why on stderr.
+
+## Use `--exec`. Do not compose the command by hand.
+
+```
+jev-test-filter --base main --exec -- vitest run
+jev-test-filter --base main --format node --exec -- node --test
+jev-test-filter --base main --format go   --exec -- go test ./...
+jev-test-filter --base main --format rust --exec -- cargo test
+```
+
+`--exec` hands argv straight to `spawn` with no shell in between. Every other
+shape has a way to go wrong:
+
+- `runner $(jev-test-filter ...)` is **broken**. Test names contain spaces, so
+  the output is shell-quoted, and an unquoted `$(...)` word-splits without
+  re-parsing the quotes. Use `eval "runner $(jev-test-filter ...)"` if you
+  genuinely need the string.
+- Building a pattern yourself from `--json` is the mistake this skill exists to
+  prevent. See the table below.
+
+## Non-negotiables
+
+1. **Never hand-write a name pattern from a selection.** The full-name
+   separator differs per runner and a wrong one matches nothing *without an
+   error*: the run is green, takes full time, and nothing says the filter did
+   not apply.
+2. **Never put the name pattern after the file positionals for node:test.**
+   `node --test a.test.js --test-name-pattern X` silently ignores the flag.
+   The tool emits the flag first; keep that order if you move it.
+3. **Never treat an empty pattern as "everything".** `vitest -t ""` runs the
+   whole suite; `node --test --test-name-pattern ""` is rejected outright.
+   "Everything" is the *absence* of the flag.
+4. **A repository with more than one framework needs `--format`.** There is no
+   single command that runs Vitest and Playwright, so the tool asks instead of
+   guessing, and exits 1. This is the one failure that is not a fail-safe.
+5. **`--format rust` is required for Rust and is never automatic.** Listing
+   cargo's tests builds the test targets. The tool does not start a compile
+   nobody asked for.
+6. **Do not use it as a merge gate on its own.** It reduces what runs on a
+   branch; the full suite still belongs somewhere before release.
+
+## What each runner needs
+
+Measured, not assumed. Getting a row wrong is silent.
+
+| Runner | Full name | Selection | Watch for |
+| --- | --- | --- | --- |
+| vitest, jest | joined `" > "` | `-t '^(?:A\|B)$'` + files | pattern order does not matter |
+| node:test | joined `" "` (one space) | `--test-name-pattern '^(?:A\|B)$'` + files | **flag must precede the files**; one flag only — a pattern matching a *suite* runs all its children |
+| @playwright/test | not used | `file:line` positionals | `--grep` matches `"<project> <file> <chain> <title>"`, so a pattern breaks when a project is added |
+| cargo test | joined `"::"` | `-- --exact A B C` | names come from `cargo test -- --list`; a module path one segment wrong selects nothing |
+| go test | joined `"/"` | `-run '^(?:TestA\|TestB)$'` + `./pkg` | **filters per top-level function**: `-run` takes one hierarchical pattern and a second `-run` replaces the first |
+
+Go scores per subtest — `--json` shows it — but selects whole top-level
+functions, because "all of TestA, but only x of TestB" cannot be expressed and
+the shape that covers TestB would drop TestA's other subtests.
+
+## Reading a run
+
+```
+jev-test-filter: 11/89 tests selected (pattern)
+```
+
+`--json` gives every test with its `score` (0–3), `confidence`, `reason` and
+`selected`. The reasons:
+
+| reason | meaning |
+| --- | --- |
+| `touched` | the test's own body is in the diff — selected without asking, costs no tokens |
+| `scored` | at or above the cutoff (default 2.0) |
+| `unsure` | near the cutoff and the model was not confident — selected to be safe |
+| `dynamic` | the title is not a literal (`.each`, an interpolated template, a table-driven `t.Run`) so it cannot be named — always selected |
+| `missing` | no usable answer — selected, because no answer is not a passing grade |
+| `below` | under the cutoff |
+
+Exit codes: **0** run it, **3** nothing was selected, **2** bad arguments,
+**1** the tool could not decide (the multi-framework case).
+
+```sh
+ARGS=$(jev-test-filter --base main --format node)
+case $? in
+  0) eval "node --test $ARGS" ;;
+  3) echo "no test can be affected by this change" ;;
+  *) exit 1 ;;
+esac
+```
+
+## Tuning without paying again
+
+Each successful run writes `.jev-test-filter/last.json`. A run that falls back
+leaves it alone, so the last *complete* scoring is always there.
+
+```
+jev-test-filter --replay .jev-test-filter/last.json --cutoff 1.0 --json
+```
+
+Re-gates offline, no request, `spent: null`. Lower the cutoff to select more.
+Scoring is not deterministic — boundary tests move between runs — so if a
+stable selection matters, take it once and re-derive it with `--replay`.
+
+## When it does not pay
+
+The scoring costs about a second and a fraction of a cent. It is worth it when
+a test costs more than that to run — Playwright suites, integration tests that
+start a database, anything compiled. A millisecond-per-test unit suite will not
+notice the saving, and the latency may exceed it.
+
+## Details
+
+- `references/runners.md` — the measurements behind the table, and how each
+  runner was probed.
+- `references/ci.md` — GitHub Actions wiring, and what to do about the
+  non-determinism.

@@ -1,0 +1,10 @@
+{
+  "name": "jev-test-filter",
+  "version": "0.1.0",
+  "description": "Score every test in a repository against a git diff with Jev, and emit the filter arguments vitest, jest, node:test, Playwright, cargo test and go test already understand. One state, one question per test, one round trip. Selection is an optimization and never a correctness gate: every failure falls back to running everything.",
+  "author": { "name": "mizchi", "url": "https://github.com/mizchi" },
+  "homepage": "https://github.com/mizchi/jev-test-filter",
+  "repository": "https://github.com/mizchi/jev-test-filter",
+  "license": "MIT",
+  "keywords": ["test", "test-selection", "vitest", "node-test", "playwright", "cargo", "go-test", "ci", "jev", "ast-grep"]
+}
