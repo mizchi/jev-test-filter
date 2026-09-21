@@ -8,8 +8,9 @@
  * misses, and a matcher that misses produces no error -- only a test that
  * quietly never runs.
  */
-import { parse, Lang } from "@ast-grep/napi";
+import { parse } from "@ast-grep/napi";
 import type { SgNode } from "@ast-grep/napi";
+import { langFor } from "./framework.ts";
 import type { Framework, TestCase } from "./types.ts";
 
 /** `describe(...)` and its spellings; Playwright's `test.describe` with its own modifiers. */
@@ -96,14 +97,6 @@ const SUITE_RULE = {
     { has: { field: "arguments", has: { any: FUNCTION_KINDS, pattern: "$BODY" } } },
   ],
 };
-
-/** The grammar to parse a file under, by extension. */
-export function langFor(file: string): Lang {
-  if (/\.tsx$/.test(file)) return Lang.Tsx;
-  if (/\.jsx$/.test(file)) return Lang.Tsx;
-  if (/\.[cm]?ts$/.test(file)) return Lang.TypeScript;
-  return Lang.JavaScript;
-}
 
 /**
  * The text of a string literal, or null when the title is not statically

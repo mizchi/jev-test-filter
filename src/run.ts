@@ -158,7 +158,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   const all: TestCase[] = [];
   for (const file of files) {
     const source = await readFile(join(cwd, file), "utf8");
-    const framework = detectFramework(source);
+    const framework = detectFramework(source, file);
     if (opts.format && framework !== opts.format) continue;
     all.push(...extractTests(source, file, framework));
   }
