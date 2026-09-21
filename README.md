@@ -3,8 +3,9 @@
 `jev-test-filter` reads a `git diff`, asks a model how much that change can
 alter the outcome of every single test in the repository, and prints the filter
 arguments your test runner already understands. It hands those arguments to the
-runner you already use — vitest, `node --test` or Playwright — so the run
-covers the tests the change could plausibly break instead of all of them.
+runner you already use — vitest, jest, `node --test`, Playwright, `cargo test`
+or `go test` — so the run covers the tests the change could plausibly break
+instead of all of them.
 
 It uses [Jev](https://typesafe.ai), TypeSafe's System One model: one shared
 `state` (the diff), one question per test, one round trip. There is no agent
@@ -12,7 +13,8 @@ loop and no file reading by the model.
 
 ## Install
 
-Requires Node 24 or newer, `git`, and a TypeSafe API key.
+Requires Node 24 or newer, `git`, and a TypeSafe API key. `--format rust` and
+`--format go` additionally need `cargo` and `go` on the `PATH`.
 
 ```
 pnpm add -D jev-test-filter
@@ -155,7 +157,83 @@ Prefer `--exec`. It exists so that nobody has to get this right.
 Tests are discovered with `git ls-files`, so untracked and ignored files are
 never considered. A file counts as a test file when it is named
 `*.test.*` or `*.spec.*` with a `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`,
-`.mts` or `.cts` extension.
+`.mts` or `.cts` extension, or when it ends in `_test.go`, which is Go's own
+convention and the only one `go test` compiles into a test binary.
+
+**Rust is the one exception: it is never discovered automatically.** Listing a
+crate's tests means running `cargo test -- --list`, and that builds the test
+targets. A tool that triggers a compile nobody asked for is a tool that gets
+removed from the workflow, so it happens only when you write `--format rust`.
+Every other language is read out of the source and costs nothing but a parse.
+
+### Rust and Go
+
+```
+$ jev-test-filter --format go --exec -- go test
+$ jev-test-filter --format rust --exec -- cargo test
+```
+
+Pass `--format` explicitly for both. For Go it is what stops a mixed
+repository — Go tests next to vitest specs — from being an error, and for Rust
+it is the permission to build. Do not give the runner its own package list:
+the tool appends the packages (Go) or the exact names (Rust) it chose, so
+`go test` and `cargo test` are the commands to hand to `--exec`.
+`--exec -- go test ./...` is not an error, but `./...` stays in the package
+list next to the `./pkg` the tool chose, so every package is compiled and the
+package-level saving is lost — only the `-run` pattern still applies.
+
+Go filters coarsely, and it is worth knowing before you read the numbers:
+scores are per subtest, but the emitted `-run` pattern names only top-level
+`TestXxx` functions, so **selecting one subtest runs all of that function's
+subtests.** The reason is in [What it emits, per framework](#what-it-emits-per-framework).
+Rust has no such limit: `--exact` takes one name per test, at any nesting.
+
+Real output, on a two-package Go module where one edit broke one subtest
+(go 1.26.2):
+
+```
+$ go test ./... -v                       # unfiltered: 5 tests in 2 packages
+--- FAIL: TestApplyDiscount (0.00s)
+    --- PASS: TestApplyDiscount/clamps_at_zero (0.00s)
+    --- FAIL: TestApplyDiscount/halves_the_total (0.00s)
+--- PASS: TestItemCount (0.00s)
+--- PASS: TestCostIsFreeOverThreshold (0.00s)
+--- PASS: TestCostBelowThreshold (0.00s)
+FAIL
+
+$ jev-test-filter --format go --exec -- go test -v
+jev-test-filter: 2/5 tests selected (pattern)
+--- FAIL: TestApplyDiscount (0.00s)
+    --- PASS: TestApplyDiscount/clamps_at_zero (0.00s)
+    --- FAIL: TestApplyDiscount/halves_the_total (0.00s)
+FAIL	scratchcart/cart	0.139s
+```
+
+It emitted `-run '^(?:TestApplyDiscount)$' ./cart`: the whole `ship` package
+was skipped, and so was `TestItemCount`. The break was still run.
+
+The same crate in Rust (cargo 1.98.0):
+
+```
+$ cargo test                             # unfiltered
+running 5 tests
+test cart::tests::apply_discount::clamps_at_zero ... ok
+test cart::tests::counts_items ... ok
+test ship::tests::charged_below_threshold ... ok
+test ship::tests::free_over_threshold ... ok
+test cart::tests::apply_discount::halves_the_total ... FAILED
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ jev-test-filter --format rust --exec -- cargo test
+jev-test-filter: 2/5 tests selected (exact)
+running 2 tests
+test cart::tests::apply_discount::clamps_at_zero ... ok
+test cart::tests::apply_discount::halves_the_total ... FAILED
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out
+```
+
+It emitted `-- --exact cart::tests::apply_discount::clamps_at_zero
+cart::tests::apply_discount::halves_the_total`.
 
 `--base <ref>` compares `<ref>...HEAD`, the way a pull request does. Without
 it, the working tree against `HEAD` is used; `--staged` uses the index.
@@ -173,6 +251,8 @@ before you hand-edit anything it prints.
 | `jest` | `" > "` | `-t '^(?:...)$'` plus the files | pattern **before** the files |
 | `node` | a single space — `Cart totals` | one `--test-name-pattern '^(?:a b\|c)$'` plus the files | pattern **before** the files |
 | `playwright` | not used | `file:line` positionals — `e2e/cart.spec.ts:12` | positionals only |
+| `rust` | `"::"` — `cart::tests::halves_the_total` | `-- --exact <name> <name>…`, one invocation | after a literal `--` |
+| `go` | `"/"` — `TestApplyDiscount/halves the total` | `-run '^(?:TestA\|TestB)$'` plus the `./pkg` directories | pattern **before** the packages |
 
 Three things in that table were measured, not assumed:
 
@@ -199,8 +279,33 @@ rejected outright (`--test-name-pattern= requires an argument`), the file is
 reported as a failing test and the process exits 1. "Select everything" has to
 be the *absence* of the flag, which is what the tool emits.
 
-Only the vitest, node:test and Playwright spellings were verified against the
-real runners. `jest` is emitted with the vitest shape.
+Two more, for the two compiled languages, and both were measured on
+cargo 1.98.0 and go 1.26.2:
+
+- **Rust names come from cargo, never from a path this tool assembled.** The
+  names handed to `--exact` are the ones `cargo test -- --list` printed.
+  `--exact` is unforgiving: a module path reconstructed one segment wrong
+  matches nothing, the run is green, and nothing tells you a test was skipped.
+  Because that listing builds the test targets, **`--format rust` is required
+  and Rust is never discovered automatically.** ast-grep then supplies each
+  listed name's file and line by matching it to a `#[test]` function, which is
+  what lets a test whose own body sits in the diff be selected without being
+  asked about. Targets are not narrowed: a name that exists in two of them runs
+  in both, which costs time and cannot lose a test.
+- **Go scores per subtest but filters per top-level function.** `go test -run`
+  takes one hierarchical pattern, and a second `-run` flag *replaces* the
+  first — so "all of `TestA`, but only `x` and `y` of `TestB`" cannot be said
+  at all. The shape that would cover `TestB` silently drops `TestA`'s other
+  subtests, and that under-selection is the one error this tool must not make.
+  So the emitted pattern names the top-level functions of the selected tests
+  and nothing more. **Select one subtest and you run every subtest of its
+  parent.** That is the cost: within a chosen function you get no filtering,
+  and the saving comes from the functions and packages that were not chosen at
+  all. `--json` still reports the per-subtest score, which is the finer signal
+  and what a reader wants to see.
+
+The vitest, node:test, Playwright, Rust and Go spellings were each verified
+against the real runner. `jest` is emitted with the vitest shape and was not.
 
 The `mode` field in `--json` names which of five shapes came out:
 
@@ -208,6 +313,7 @@ The `mode` field in `--json` names which of five shapes came out:
 | --- | --- | --- |
 | `pattern` | flag, pattern, files | The normal case. |
 | `locations` | `file:line`… | Playwright. |
+| `exact` | `--`, `--exact`, names… | Rust. Every name came from `cargo test -- --list`. |
 | `files` | files | A name pattern could not express the selection, so whole files were chosen. This happens when a selected test has a non-literal title, or when more than 80% of the suite was selected and the alternation would not be worth it. |
 | `all` | *(empty)* | Run everything. Either every test was selected, or a fail-safe fired. |
 | `none` | *(empty)* | Nothing was selected. `--exec` does not start the command; the stdout form exits 3. |
@@ -289,7 +395,7 @@ framework with no `--format`, which exits 1 (see Known limitations).
 ```
 --base <ref>        compare against <ref>...HEAD, as a pull request does
 --staged            use the staged change instead of the working tree
---format <name>     vitest | jest | node | playwright | auto  (default: auto)
+--format <name>     vitest | jest | node | playwright | rust | go | auto  (default: auto)
 --cutoff <n>        select at or above this score level (default: 2)
 --concurrency <n>   requests in flight at once (default: 32)
 --json              print the full scoring instead of the arguments
@@ -353,15 +459,39 @@ test is one question.
 - **A repository whose tests span more than one framework needs `--format`.**
   There is no single command that runs vitest and Playwright together, so the
   tool refuses to guess and asks instead. It exits 1 with
-  `the selected tests span more than one framework (node, playwright, vitest);
-  narrow the run with a path argument or pick one with --format`. This is the
-  one failure that is not a fail-safe.
+  `the selected tests span more than one framework (node, go, playwright,
+  vitest); narrow the run with a path argument or pick one with --format`.
+  This is the one failure that is not a fail-safe. This repository is itself
+  such a repository — its fixtures cover four runners — so every command above
+  that is run here passes `--format`.
 - **A test whose title is not a literal is always selected.** An interpolated
   template or a `.each` row has no name a pattern can hold. Such a test is kept
   to be safe, and because a pattern applies to the whole run rather than to one
   file, a single one of them in the selection drops the entire run to
   file-level filtering (`mode: "files"`). Still a large saving, but less than
   name-level.
+- **A Go subtest whose name is not a literal cannot be named**, and its parent
+  is selected whole. That is the table-driven idiom, so it is common. Worse,
+  `go test` rewrites a subtest's spaces into underscores when it reports and
+  matches it, so two subtests named `"a b"` and `"a_b"` collide, get `#01`
+  appended, and cannot be told apart by name **at all** — not by this tool and
+  not by a `-run` pattern you write yourself. Selecting whole top-level
+  functions is the answer to both.
+- **A Rust test a macro generated is listed by cargo but has no location.** An
+  `rstest` case, or anything else a macro produced, appears in
+  `cargo test -- --list` but matches no `#[test]` function in the source, so it
+  keeps no file and no line. No changed range can overlap it, which means it is
+  *scored* like any other test rather than selected for free when the diff
+  touches it. It is never dropped for want of a location — a missing answer
+  still selects.
+- **`@ast-grep/lang-rust` and `@ast-grep/lang-go` ship prebuilt binaries, and
+  their install scripts are commonly skipped.** pnpm 10 blocks `postinstall`
+  by default, and both packages use one. That is harmless wherever
+  `node_modules/@ast-grep/lang-<name>/prebuilds/` already holds a build for
+  your platform — Linux and macOS on x64 and arm64, and Windows x64 — which is
+  why it works here with the script never having run. If `--format rust` or
+  `--format go` extracts nothing on some other platform, check that directory
+  first, and allow the build with `pnpm approve-builds`.
 - **Selection is static.** Tests are read from the source with ast-grep, and
   the model judges what the source shows. A test that reaches the changed code
   only through a runtime indirection — a plugin registry, a dependency-injected

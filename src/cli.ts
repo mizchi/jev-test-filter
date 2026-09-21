@@ -28,7 +28,7 @@ import { loadRecord, replay, run, saveRecord } from "./run.ts";
 import type { RunRecord, RunResult } from "./run.ts";
 import type { Framework } from "./types.ts";
 
-const FORMATS: readonly string[] = ["vitest", "jest", "node", "playwright", "auto"];
+const FORMATS: readonly string[] = ["vitest", "jest", "node", "playwright", "rust", "go", "auto"];
 
 export interface CliArgs {
   base: string | null;
@@ -179,7 +179,7 @@ Usage:
 Options:
   --base <ref>        compare against the merge base with <ref>, as a pull request does
   --staged            use the staged change instead of the working tree
-  --format <name>     vitest | jest | node | playwright | auto  (default: auto)
+  --format <name>     vitest | jest | node | playwright | rust | go | auto  (default: auto)
   --cutoff <n>        select at or above this score level (default: 2)
   --concurrency <n>   requests in flight at once
   --json              print the full scoring instead of the arguments
@@ -191,7 +191,12 @@ Options:
 Examples:
   jev-test-filter --base main --exec -- vitest run
   jev-test-filter --base main --format node --exec -- node --test
+  jev-test-filter --base main --format go --exec -- go test
+  jev-test-filter --base main --format rust --exec -- cargo test
   jev-test-filter --base main --json > selection.json
+
+Rust is never discovered automatically: listing its tests builds the test
+targets, so it happens only under --format rust.
 
 Without --exec the arguments are written to stdout, shell-quoted. They are
 meant to be read, or passed through eval:
