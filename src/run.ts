@@ -188,6 +188,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   if (opts.dryRun) {
     selection = everything(all, "--dry-run: no questions were asked");
   } else {
+    let failure: string | null = null;
     try {
       const client = opts.client ?? new Jev();
       answers = await score(all, state, {
@@ -196,10 +197,12 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
         ...(opts.batchSize === undefined ? {} : { batchSize: opts.batchSize }),
       });
       spent = client.spent;
-      selection = gate(all, answers, touched, opts);
     } catch (err: unknown) {
-      selection = everything(all, `jev failed: ${err instanceof Error ? err.message : String(err)}`);
+      failure = `jev failed: ${err instanceof Error ? err.message : String(err)}`;
     }
+    // Gating is pure and offline, so it stays outside the try: a bug in the
+    // gate must not be reported to the user as a network failure.
+    selection = failure === null ? gate(all, answers, touched, opts) : everything(all, failure);
   }
 
   // A truncated diff that still deselects most of the suite is a selection

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { collect, score, replay, pickFramework } from "../src/run.ts";
 import type { AskClient } from "../src/jev.ts";
+import { testId } from "../src/types.ts";
 import type { TestCase } from "../src/types.ts";
 
 function mk(file: string, path: string[], over: Partial<TestCase> = {}): TestCase {
@@ -49,10 +50,12 @@ test("score leaves an unanswered question null rather than inventing a zero", as
 });
 
 test("collect pairs each test with whether the diff touched it", () => {
-  const tests = [mk("a.test.ts", ["edited"], { line: 10, endLine: 20 }), mk("a.test.ts", ["untouched"], { line: 40, endLine: 44 })];
+  const edited = mk("a.test.ts", ["edited"], { line: 10, endLine: 20 });
+  const untouched = mk("a.test.ts", ["untouched"], { line: 40, endLine: 44 });
   const ranges = new Map([["a.test.ts", [[12, 13]] as Array<[number, number]>]]);
-  const touched = collect(tests, ranges);
-  assert.equal(touched.size, 1);
+  // Which one, not how many: a `collect` that returned the wrong test would
+  // satisfy a size check and quietly run the wrong half of the suite.
+  assert.deepEqual([...collect([edited, untouched], ranges)], [testId(edited)]);
 });
 
 test("replay re-gates a record without a client", () => {
