@@ -19,7 +19,7 @@ to send whole — falls back to running everything and says why on stderr.
 ```
 jev-test-filter --base main --exec -- vitest run
 jev-test-filter --base main --format node --exec -- node --test
-jev-test-filter --base main --format go   --exec -- go test ./...
+jev-test-filter --base main --format go   --exec -- go test
 jev-test-filter --base main --format rust --exec -- cargo test
 ```
 
@@ -64,7 +64,7 @@ Measured, not assumed. Getting a row wrong is silent.
 | node:test | joined `" "` (one space) | `--test-name-pattern '^(?:A\|B)$'` + files | **flag must precede the files**; one flag only — a pattern matching a *suite* runs all its children |
 | @playwright/test | not used | `file:line` positionals | `--grep` matches `"<project> <file> <chain> <title>"`, so a pattern breaks when a project is added |
 | cargo test | joined `"::"` | `-- --exact A B C` | names come from `cargo test -- --list`; a module path one segment wrong selects nothing |
-| go test | joined `"/"` | `-run '^(?:TestA\|TestB)$'` + `./pkg` | **filters per top-level function**: `-run` takes one hierarchical pattern and a second `-run` replaces the first |
+| go test | joined `"/"` | `-run '^(?:TestA\|TestB)$'` + `./pkg` | **filters per top-level function**: `-run` takes one hierarchical pattern and a second `-run` replaces the first. Pass a bare `go test` — a `./...` you add stays in the package list and every package is compiled anyway |
 
 Go scores per subtest — `--json` shows it — but selects whole top-level
 functions, because "all of TestA, but only x of TestB" cannot be expressed and

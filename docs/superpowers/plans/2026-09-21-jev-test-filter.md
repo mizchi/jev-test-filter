@@ -4324,6 +4324,105 @@ git add src/cli.ts test README.md
 git commit -m "feat: wire up Rust and Go, and document what each runner does"
 ```
 
+---
+
+## Task 20: Make a bare `--replay` mean what the help says
+
+`HELP` advertises `--replay <file>` with `(default: .jev-test-filter/last.json)`,
+and `main` has the code for that default — but it is unreachable. `node:util`'s
+`parseArgs` has no notion of an optional value, so a `{ type: "string" }` option
+given without one is an error:
+
+```
+$ jev-test-filter --replay
+jev-test-filter: Option '--replay <value>' argument missing
+```
+
+Only `--replay=` reaches the default. Found while writing the README, which
+worked around it by always passing an explicit path.
+
+**Files:**
+- Modify: `src/cli.ts`
+- Test: `test/cli.test.ts`
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `test/cli.test.ts`, and add `DEFAULT_RECORD_PATH` to the existing import
+from `../src/cli.ts`:
+
+```ts
+test("a bare --replay means the record the last run left", () => {
+  assert.equal(parseCliArgs(["--replay"]).replayPath, DEFAULT_RECORD_PATH);
+  assert.equal(parseCliArgs(["--replay", "--cutoff", "1"]).replayPath, DEFAULT_RECORD_PATH);
+});
+
+test("--replay still takes an explicit path either way round", () => {
+  assert.equal(parseCliArgs(["--replay", "old.json"]).replayPath, "old.json");
+  assert.equal(parseCliArgs(["--replay=old.json"]).replayPath, "old.json");
+});
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `node --test test/cli.test.ts`
+Expected: FAIL — `DEFAULT_RECORD_PATH is not defined`, and once that is
+imported, `Option '--replay <value>' argument missing`.
+
+- [ ] **Step 3: Write the implementation**
+
+In `src/cli.ts`, import the two record constants and derive the path:
+
+```ts
+import { loadRecord, RECORD_DIR, RECORD_FILE, replay, run, saveRecord } from "./run.ts";
+
+/** Where a run leaves its answers, and what a bare `--replay` means. */
+export const DEFAULT_RECORD_PATH = `${RECORD_DIR}/${RECORD_FILE}`;
+```
+
+In `parseCliArgs`, between computing `own` and calling `parseArgs`:
+
+```ts
+  // `--replay` may be given without a path. parseArgs has no notion of an
+  // optional value -- a bare one is an error, and only `--replay=` reaches a
+  // default -- so a bare one is rewritten before parseArgs sees it. A path is
+  // a path; anything starting with `-` is the next option.
+  const args = own.map((a, i) =>
+    a === "--replay" && (i === own.length - 1 || own[i + 1]!.startsWith("-"))
+      ? `--replay=${DEFAULT_RECORD_PATH}`
+      : a,
+  );
+```
+
+and pass `args` to `parseArgs` in place of `own`.
+
+In `main`, the fallback is now dead and should go:
+
+```ts
+    const record = await loadRecord(args.replayPath);
+```
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `node --test test/cli.test.ts`
+Expected: PASS, `pass 12`.
+
+- [ ] **Step 5: Verify by hand**
+
+```bash
+node src/cli.ts --base HEAD~3 --format node > /dev/null
+node src/cli.ts --replay --format node --json | head -5
+node src/cli.ts --replay --cutoff 1.0 --json | head -5
+```
+
+Both replays must report `"spent": null` and the second must select more.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/cli.ts test/cli.test.ts
+git commit -m "fix: let a bare --replay find the last run's record"
+```
+
 ## Self-review notes
 
 - Spec coverage: every module in the spec's table has a task (2–12); the fail-safe list is implemented in `run.ts` and exercised in Task 11; the verified runner behaviour is implemented in `filter.ts` and re-checked end to end in Task 13; the repository conventions are Task 1 and Task 14.
