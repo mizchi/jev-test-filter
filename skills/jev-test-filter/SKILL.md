@@ -14,6 +14,17 @@ Selection is an **optimization, never a correctness gate.** Every failure path
 — no API key, a Jev error, a missing answer, no tests found, a diff too large
 to send whole — falls back to running everything and says why on stderr.
 
+## Getting it
+
+The skill is not the command. `npx jev-test-filter` runs it without installing;
+`pnpm add -D jev-test-filter` puts it in the project. It needs Node 24 or newer,
+`git`, and `TYPESAFE_API_KEY` in the environment; `--format rust` and
+`--format go` also need `cargo` and `go` on the `PATH`.
+
+Check for the key before recommending the tool. Without one it does not fail —
+it reports that it is running everything and exits 0, which is a correct answer
+and a useless one, and the user will reasonably wonder what they paid for.
+
 ## Use `--exec`. Do not compose the command by hand.
 
 ```

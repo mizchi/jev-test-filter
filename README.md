@@ -16,13 +16,46 @@ loop and no file reading by the model.
 Requires Node 24 or newer, `git`, and a TypeSafe API key. `--format rust` and
 `--format go` additionally need `cargo` and `go` on the `PATH`.
 
-```
+### The command
+
+```bash
 pnpm add -D jev-test-filter
 ```
 
-The package is not published yet. Until it is, run it from a clone:
+Or without installing anything:
+
+```bash
+npx jev-test-filter --base main --exec -- vitest run
+```
+
+### The skill, for coding agents
+
+The command is what runs; the skill is what teaches an agent to drive it —
+which runner takes which flag and in which order, why `--exec` rather than a
+composed shell command, and what each exit code means. Most of that is
+knowledge an agent cannot guess and gets wrong silently, which is the whole
+reason it is written down.
+
+**Installing the skill does not install the command.** You want both.
+
+As a skill for Claude Code, Codex, Cursor and the other agents the
+[skills](https://skills.sh) CLI knows, into the current project:
+
+```bash
+npx skills add mizchi/jev-test-filter
+```
+
+As a Claude Code plugin, which brings the same skill plus a `/filter-tests`
+command:
 
 ```
+/plugin marketplace add mizchi/jev-test-filter
+/plugin install jev-test-filter@jev-test-filter
+```
+
+### From source
+
+```bash
 git clone https://github.com/mizchi/jev-test-filter
 cd jev-test-filter
 pnpm install
