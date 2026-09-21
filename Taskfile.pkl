@@ -1,0 +1,103 @@
+/// Tasks for jev-test-filter.
+///
+/// After cloning:
+///
+///   pnpm install
+///   pkf hooks install
+///
+/// That writes `.git/hooks/pre-push` to call `pkf run pre-push`. Re-running it
+/// is idempotent, and `.envrc` performs the same call so `cd` into a fresh
+/// clone is enough. The pre-push gate scans the outgoing diff for secrets.
+amends "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.12.3#/Taskfile.pkl"
+
+/// Type-check the sources without emitting.
+local typecheck: Task = new {
+  name = "typecheck"
+  description = "tsc --noEmit"
+  cmd = "pnpm exec tsc --noEmit"
+  inputs {
+    "src/**/*.ts"
+    "tsconfig.json"
+    "package.json"
+  }
+  cache = false
+}
+
+/// Unit tests. Node 24 strips the types, so the sources run unbuilt.
+local test: Task = new {
+  name = "test"
+  description = "node --test over test/**/*.test.ts"
+  cmd = "node --test \"test/**/*.test.ts\""
+  inputs {
+    "src/**/*.ts"
+    "test/**/*"
+    "package.json"
+  }
+  cache = false
+}
+
+/// Emit `dist/`.
+local build: Task = new {
+  name = "build"
+  description = "tsc"
+  cmd = "pnpm run build"
+  inputs {
+    "src/**/*.ts"
+    "tsconfig.json"
+  }
+  outputs {
+    "dist/**/*"
+  }
+}
+
+/// Secret-leak gate over the about-to-be-pushed diff. See pkfire recipe 14.
+local secretlint: Task = new {
+  name = "lint:secretlint"
+  description = "Run secretlint against files in the diff about to be pushed"
+  cmd =
+    #"""
+    set -euo pipefail
+    upstream=$(git rev-parse --symbolic-full-name '@{push}' 2>/dev/null \
+            || git rev-parse --symbolic-full-name '@{u}' 2>/dev/null \
+            || true)
+    emit_files() {
+      if [ -n "$upstream" ]; then
+        git diff --name-only --diff-filter=ACMR -z "${upstream}..HEAD"
+      else
+        git ls-files -z
+      fi
+    }
+    if [ -z "$(emit_files | tr -d '\0')" ]; then
+      exit 0
+    fi
+    emit_files | xargs -0 pnpm exec secretlint --
+    """#
+  cache = false
+  inputs {
+    ".secretlintrc.json"
+    ".secretlintignore"
+    "package.json"
+    "pnpm-lock.yaml"
+  }
+}
+
+/// Everything a change has to pass locally.
+local check: Task = new {
+  name = "check"
+  description = "typecheck + test"
+  cmd = "echo check ok"
+  cache = false
+  deps { typecheck; test }
+}
+
+/// Pre-push hook target. `pkf hooks install` wires `.git/hooks/pre-push` to
+/// this. Thin aggregator so more gates can be added later.
+local prePush: Task = new {
+  name = "pre-push"
+  description = "Pre-push gate: secretlint over the outgoing diff, then check"
+  cmd = "echo pre-push ok"
+  cache = false
+  deps { secretlint; check }
+}
+
+tasks { typecheck; test; build; secretlint; check; prePush }
