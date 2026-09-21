@@ -2682,9 +2682,18 @@ Expected: FAIL, `Cannot find module '../src/cli.ts'`.
  * Three shapes, because "easy to wire in" means different things in a
  * Makefile, in a shell and in another program:
  *
- *   jev-test-filter --base main                 -> arguments on stdout
  *   jev-test-filter --base main --exec -- vitest run
  *   jev-test-filter --base main --json          -> the whole scoring
+ *   jev-test-filter --base main                 -> arguments on stdout
+ *
+ * `--exec` is the one to reach for, and not merely out of convenience: it
+ * hands the arguments to `spawn` with no shell in between, so nothing can be
+ * re-split. The stdout form cannot offer that. A test name contains spaces
+ * almost by definition, `renderLine` therefore quotes it, and an unquoted
+ * `$(...)` word-splits without re-parsing those quotes -- so
+ * `vitest run $(jev-test-filter)` hands vitest five arguments where one was
+ * meant. The stdout form is for reading and for `eval`, and the help text
+ * says so.
  *
  * Only this file writes to a stream or exits.
  */
@@ -2762,7 +2771,13 @@ export function parseCliArgs(argv: string[]): CliArgs {
   };
 }
 
-/** Shell-safe single quoting, for a line a human will paste. */
+/**
+ * Shell-safe single quoting, for a line a human will read or `eval`.
+ *
+ * Not for an unquoted `$(...)`: that word-splits without re-parsing quotes,
+ * so a quoted test name arrives as several arguments. `--exec` exists so
+ * that nobody has to get this right.
+ */
 function quote(arg: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
 }
@@ -2806,6 +2821,7 @@ export function renderJson(res: RunResult): string {
 const HELP = `jev-test-filter — score every test against a git diff and emit runner arguments
 
 Usage:
+  jev-test-filter [options] --exec -- <command...>
   jev-test-filter [options] [paths...]
 
 Options:
@@ -2819,6 +2835,20 @@ Options:
   --replay <file>     re-gate a recorded run offline (default: .jev-test-filter/last.json)
   --exec -- <cmd...>  append the arguments to <cmd...> and run it
   -h, --help          this text
+
+Examples:
+  jev-test-filter --base main --exec -- vitest run
+  jev-test-filter --base main --format node --exec -- node --test
+  jev-test-filter --base main --json > selection.json
+
+Without --exec the arguments are written to stdout, shell-quoted. They are
+meant to be read, or passed through eval:
+
+  eval "vitest run $(jev-test-filter --base main)"
+
+An unquoted $(...) will not work: a test name contains spaces, so the
+arguments are quoted, and the shell word-splits them without re-parsing the
+quotes. Use --exec instead of working around it.
 
 Environment:
   TYPESAFE_API_KEY    required unless --dry-run or --replay
@@ -3133,11 +3163,19 @@ MIT, `Copyright (c) 2026 mizchi`.
 
 - [ ] **Step 2: Write `README.md`**
 
-It must contain, in this order: what the tool does in two sentences; an install line; the three invocation shapes; a table of the per-framework selection behaviour copied from the "Facts verified before this plan was written" section above, because it is the part a user will otherwise get wrong; the fail-safe list; a "Known limitations" section; and the environment variables. English, per the repository convention.
+It must contain, in this order: what the tool does in two sentences; an install line; the three invocation shapes, **leading with `--exec`**; a table of the per-framework selection behaviour copied from the "Facts verified before this plan was written" section above, because it is the part a user will otherwise get wrong; the fail-safe list; a "Known limitations" section; and the environment variables. English, per the repository convention.
 
 "Known limitations" must name these three, because each is a thing a user will
 otherwise report as a bug:
 
+- The stdout form is shell-quoted and needs `eval`. An unquoted
+  `runner $(jev-test-filter ...)` splits a quoted test name into several
+  arguments and the runner rejects it. `--exec` passes argv straight to
+  `spawn` with no shell in between and has no such hazard, which is why it
+  leads the document.
+- An empty name pattern is not neutral, so never build one by hand from
+  `--json`: `vitest -t ""` runs everything, `node --test --test-name-pattern ""`
+  runs nothing.
 - A repository whose tests span more than one framework needs `--format`.
   There is no single command that runs Vitest and Playwright together, so the
   tool asks rather than guessing.
