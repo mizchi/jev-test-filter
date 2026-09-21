@@ -3425,6 +3425,905 @@ git commit -m "docs: document the three invocation shapes and the per-framework 
 
 ---
 
+---
+
+## Task 16: Grammars, discovery, and Go extraction
+
+**Files:**
+- Create: `src/languages.ts`, `src/extract-go.ts`, `src/discover.ts`
+- Modify: `src/types.ts`, `src/framework.ts`, `src/run.ts`, `package.json`
+- Test: `test/extract-go.test.ts`
+
+- [ ] **Step 1: Add the two grammar packages**
+
+Run: `pnpm add @ast-grep/lang-rust @ast-grep/lang-go`
+Expected: `@ast-grep/lang-rust` ^0.0.7 and `@ast-grep/lang-go` ^0.0.6 in `dependencies`.
+
+- [ ] **Step 2: Write the failing test**
+
+`test/extract-go.test.ts`:
+
+```ts
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { extractGoTests, goLiteral } from "../src/extract-go.ts";
+
+const SRC = `
+package cart
+
+import "testing"
+
+func TestApplyDiscount(t *testing.T) {
+	t.Run("clamps at zero", func(t *testing.T) {})
+	t.Run(` + "`halves the total`" + `, func(t *testing.T) {})
+}
+
+func TestItemCount(t *testing.T) {}
+
+func TestTable(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {})
+	}
+}
+
+func helper(t *testing.T) {}
+func BenchmarkThing(b *testing.B) {}
+`;
+
+test("goLiteral reads both string spellings and refuses the rest", () => {
+  assert.equal(goLiteral('"a b"'), "a b");
+  assert.equal(goLiteral("`a b`"), "a b");
+  assert.equal(goLiteral("tc.name"), null);
+});
+
+test("a test function with subtests yields one case per subtest", () => {
+  const found = extractGoTests(SRC, "cart/cart_test.go");
+  const names = found.map((t) => t.titlePath.join("/"));
+  assert.deepEqual(names, [
+    "TestApplyDiscount/clamps at zero",
+    "TestApplyDiscount/halves the total",
+    "TestItemCount",
+    "TestTable/",
+  ]);
+});
+
+test("a subtest whose name is not a literal is dynamic", () => {
+  const found = extractGoTests(SRC, "cart/cart_test.go");
+  assert.deepEqual(found.map((t) => t.dynamic), [false, false, false, true]);
+});
+
+test("only Test functions are collected", () => {
+  const found = extractGoTests(SRC, "cart/cart_test.go");
+  assert.equal(found.some((t) => t.titlePath[0] === "helper"), false);
+  assert.equal(found.some((t) => t.titlePath[0] === "BenchmarkThing"), false);
+});
+
+test("the file and 1-based lines are carried", () => {
+  const found = extractGoTests(SRC, "cart/cart_test.go");
+  assert.equal(found[0]!.file, "cart/cart_test.go");
+  assert.equal(found[0]!.framework, "go");
+  assert.equal(found[0]!.line, 7);
+});
+```
+
+- [ ] **Step 3: Run the test to verify it fails**
+
+Run: `node --test test/extract-go.test.ts`
+Expected: FAIL, `Cannot find module '../src/extract-go.ts'`.
+
+- [ ] **Step 4: Write `src/languages.ts`**
+
+```ts
+/**
+ * The grammars ast-grep does not bundle.
+ *
+ * `@ast-grep/napi` ships the web languages only; Rust and Go arrive as
+ * separate packages and have to be registered before the first `parse` that
+ * names them. Registration is process-wide and rejects a second call for the
+ * same language, so it happens once behind a flag rather than per file.
+ */
+import { registerDynamicLanguage } from "@ast-grep/napi";
+import rust from "@ast-grep/lang-rust";
+import go from "@ast-grep/lang-go";
+
+let registered = false;
+
+export function registerLanguages(): void {
+  if (registered) return;
+  registerDynamicLanguage({ rust, go });
+  registered = true;
+}
+```
+
+- [ ] **Step 5: Write `src/extract-go.ts`**
+
+```ts
+/**
+ * Go's tests, read out of the source.
+ *
+ * `go test -list` prints only top-level functions, so it cannot supply what a
+ * per-subtest judgment needs. The source can: `func TestXxx` is a leaf when it
+ * holds no `t.Run`, and a suite when it does.
+ *
+ * A `t.Run` whose name is not a literal is the table-driven idiom, and it is
+ * `dynamic` for exactly the reason an interpolated Vitest title is -- there is
+ * no name to put in a pattern. Go compounds it: a subtest's spaces become
+ * underscores, and two subtests that collide after that rewrite get `#01`
+ * appended and cannot be told apart by name at all. The filter layer answers
+ * both by selecting whole top-level functions.
+ */
+import { parse } from "@ast-grep/napi";
+import { registerLanguages } from "./languages.ts";
+import type { TestCase } from "./types.ts";
+
+/**
+ * `func TestXxx(...)`. Go's own rule is that what follows `Test` must not
+ * start with a lowercase letter, which is what separates `TestFoo` from
+ * `Testing`. `Benchmark`, `Fuzz` and `Example` are not what `-run` selects.
+ */
+const TEST_FUNC = { kind: "function_declaration", has: { field: "name", regex: "^Test($|[^a-z])" } };
+
+/** `t.Run(name, fn)`, by the method's name rather than the receiver's. */
+const SUBTEST = {
+  kind: "call_expression",
+  has: { field: "function", kind: "selector_expression", has: { field: "field", regex: "^Run$" } },
+};
+
+/** A Go string literal's text, or null when the argument is not one. */
+export function goLiteral(raw: string): string | null {
+  if (raw.startsWith("`") && raw.endsWith("`")) return raw.slice(1, -1);
+  if (raw.startsWith('"') && raw.endsWith('"')) return raw.slice(1, -1).replace(/\\(.)/g, "$1");
+  return null;
+}
+
+export function extractGoTests(source: string, file: string): TestCase[] {
+  registerLanguages();
+  const root = parse("go", source).root();
+  const out: TestCase[] = [];
+
+  for (const fn of root.findAll({ rule: TEST_FUNC as never })) {
+    const name = fn.field("name")?.text() ?? "";
+    const range = fn.range();
+    const subs = fn.findAll({ rule: SUBTEST as never });
+
+    if (subs.length === 0) {
+      out.push({
+        file,
+        titlePath: [name],
+        line: range.start.line + 1,
+        endLine: range.end.line + 1,
+        framework: "go",
+        dynamic: false,
+      });
+      continue;
+    }
+
+    for (const sub of subs) {
+      // child(0) is the opening parenthesis; the name is the first argument.
+      const raw = sub.field("arguments")?.child(1)?.text() ?? "";
+      const title = goLiteral(raw);
+      const at = sub.range();
+      out.push({
+        file,
+        titlePath: [name, title ?? ""],
+        line: at.start.line + 1,
+        endLine: at.end.line + 1,
+        framework: "go",
+        dynamic: title === null,
+      });
+    }
+  }
+  return out;
+}
+```
+
+- [ ] **Step 6: Run the test to verify it passes**
+
+Run: `node --test test/extract-go.test.ts`
+Expected: PASS, `pass 5`. If the line number in the last assertion is not 7, print `fn.range()` and report the real one before changing anything.
+
+- [ ] **Step 7: Widen the contract and the discovery**
+
+In `src/types.ts`, extend the union and document the two new members:
+
+```ts
+/**
+ * Which runner a test belongs to. It decides how the full name is spelled and
+ * which flag carries the selection, so it is carried per test rather than per
+ * run: a repository with both Vitest unit tests and Playwright specs is normal.
+ *
+ * `jest` is separate from `vitest` only so a report can name it; the two share
+ * a filter shape exactly.
+ */
+export type Framework = "vitest" | "jest" | "node" | "playwright" | "rust" | "go" | "unknown";
+```
+
+and on `TestCase`, replace the `file` and `line` comments with:
+
+```ts
+  /**
+   * Repository-relative, POSIX separators. Empty when the location is not
+   * known -- a Rust test cargo listed and no `#[test]` function could be
+   * matched to, such as one a macro generated.
+   */
+  file: string;
+  /**
+   * 1-based and inclusive: the range of the test call itself. Zero when the
+   * location is not known, which no changed range can overlap, so such a test
+   * is scored rather than selected for free.
+   */
+  line: number;
+  endLine: number;
+```
+
+In `src/framework.ts`, teach `isTestFile` about Go and add a predicate for it:
+
+```ts
+/** `foo.test.ts`, `foo.spec.tsx`, `foo.test.mjs`, and the rest of the family. */
+const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+
+/** Go's own convention, and the only one `go test` compiles into a test binary. */
+const GO_TEST_FILE = /_test\.go$/;
+
+export function isGoTestFile(file: string): boolean {
+  return GO_TEST_FILE.test(file);
+}
+
+export function isTestFile(file: string): boolean {
+  return TEST_FILE.test(file) || GO_TEST_FILE.test(file);
+}
+```
+
+- [ ] **Step 8: Write `src/discover.ts`**
+
+```ts
+/**
+ * Every test in the repository, whatever language it is written in.
+ *
+ * ECMAScript and Go come out of the source and cost a parse. Rust has to be
+ * asked for: its names come from `cargo test -- --list`, which builds the test
+ * targets, and a tool that triggers a compile nobody asked for is a tool that
+ * gets removed from the workflow. `--format rust` is that asking.
+ */
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { detectFramework, findTestFiles, isGoTestFile } from "./framework.ts";
+import { extractTests } from "./extract.ts";
+import { extractGoTests } from "./extract-go.ts";
+import { listRustTests } from "./cargo.ts";
+import type { Framework, TestCase } from "./types.ts";
+
+export async function discoverTests(
+  cwd: string,
+  paths: string[],
+  format: Framework | null,
+): Promise<TestCase[]> {
+  const out: TestCase[] = [];
+
+  for (const file of await findTestFiles(cwd, paths)) {
+    const source = await readFile(join(cwd, file), "utf8");
+    if (isGoTestFile(file)) {
+      if (format === null || format === "go") out.push(...extractGoTests(source, file));
+      continue;
+    }
+    const framework = detectFramework(source, file);
+    if (format !== null && framework !== format) continue;
+    out.push(...extractTests(source, file, framework));
+  }
+
+  if (format === "rust") out.push(...(await listRustTests(cwd)));
+
+  return out;
+}
+```
+
+- [ ] **Step 9: Use it from `src/run.ts`**
+
+Replace the discovery loop in `run` — the block that begins `const files = await findTestFiles(` and ends with the `extractTests` push — with:
+
+```ts
+  const all = await discoverTests(cwd, opts.paths ?? [], opts.format ?? null);
+```
+
+and replace the now-unused `readFile`, `join`, `detectFramework`, `findTestFiles` and `extractTests` imports with `import { discoverTests } from "./discover.ts";`. `readFile` is still needed by `loadRecord`, and `join` by `saveRecord`; keep those.
+
+- [ ] **Step 10: Verify**
+
+Run: `pnpm exec tsc --noEmit` — clean, except that `./cargo.ts` does not exist yet. Task 18 writes it; until then, `discover.ts` will not type-check. That is expected: **do not stub `cargo.ts`**, and do not commit until Task 18 is done.
+
+Run: `node --test test/extract-go.test.ts`
+Expected: PASS, `pass 5`.
+
+- [ ] **Step 11: Hold the commit**
+
+`discover.ts` imports a module Task 18 creates. Commit Tasks 16, 17 and 18 together, after Task 18's step that makes the tree type-check.
+
+---
+
+## Task 17: Go's filter
+
+**Files:**
+- Modify: `src/filter.ts`, `src/questions.ts`
+- Test: `test/filter.test.ts`
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `test/filter.test.ts`:
+
+```ts
+test("go selects whole top-level functions and narrows to packages", () => {
+  const a = mk("cart/cart_test.go", ["TestApplyDiscount", "clamps at zero"], { framework: "go" });
+  const b = mk("cart/cart_test.go", ["TestApplyDiscount", "halves the total"], { framework: "go" });
+  const c = mk("cart/cart_test.go", ["TestItemCount"], { framework: "go" });
+  const d = mk("tax/tax_test.go", ["TestWithTax"], { framework: "go" });
+  const f = buildFilter(sel([a, b, c, d], [a, d]), "go");
+  assert.equal(f.mode, "pattern");
+  assert.deepEqual(f.argv, ["-run", "^(?:TestApplyDiscount|TestWithTax)$", "./cart", "./tax"]);
+});
+
+test("go names a parent once however many of its subtests are selected", () => {
+  const a = mk("cart/cart_test.go", ["TestApplyDiscount", "clamps at zero"], { framework: "go" });
+  const b = mk("cart/cart_test.go", ["TestApplyDiscount", "halves the total"], { framework: "go" });
+  const c = mk("cart/cart_test.go", ["TestItemCount"], { framework: "go" });
+  const f = buildFilter(sel([a, b, c], [a, b]), "go");
+  assert.deepEqual(f.argv, ["-run", "^(?:TestApplyDiscount)$", "./cart"]);
+});
+
+test("a go test at the module root is named ./", () => {
+  const a = mk("x_test.go", ["TestA"], { framework: "go" });
+  const b = mk("x_test.go", ["TestB"], { framework: "go" });
+  const f = buildFilter(sel([a, b], [a]), "go");
+  assert.deepEqual(f.argv, ["-run", "^(?:TestA)$", "./"]);
+});
+
+test("rust selects by exact path after a double dash", () => {
+  const a = mk("src/lib.rs", ["tests", "apply_discount", "clamps_at_zero"], { framework: "rust" });
+  const b = mk("src/lib.rs", ["tests", "counts_items"], { framework: "rust" });
+  const c = mk("", ["macro_generated"], { framework: "rust", line: 0, endLine: 0 });
+  const f = buildFilter(sel([a, b, c], [a, c]), "rust");
+  assert.equal(f.mode, "exact");
+  assert.deepEqual(f.argv, ["--", "--exact", "tests::apply_discount::clamps_at_zero", "macro_generated"]);
+});
+
+test("a dynamic go subtest does not drop the run to whole files", () => {
+  // Go already filters at the top level, so a nameless subtest costs nothing
+  // extra: its parent is named either way.
+  const a = mk("cart/cart_test.go", ["TestTable", ""], { framework: "go", dynamic: true });
+  const b = mk("cart/cart_test.go", ["TestItemCount"], { framework: "go" });
+  const f = buildFilter(sel([a, b], [a]), "go");
+  assert.equal(f.mode, "pattern");
+  assert.deepEqual(f.argv, ["-run", "^(?:TestTable)$", "./cart"]);
+});
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `node --test test/filter.test.ts`
+Expected: FAIL — go and rust fall through to the ECMAScript branch and produce file positionals.
+
+- [ ] **Step 3: Write the implementation**
+
+In `src/filter.ts`, extend `FilterMode`:
+
+```ts
+  /** `file:line` positionals. */
+  | "locations"
+  /** Exact names, for a runner that does not take a pattern. */
+  | "exact";
+```
+
+Teach `fullName` the two new spellings:
+
+```ts
+/** The full name as this test's own runner spells it. */
+export function fullName(t: TestCase): string {
+  if (t.framework === "rust") return t.titlePath.join("::");
+  if (t.framework === "go") return t.titlePath.join("/");
+  const sep = t.framework === "node" ? " " : " > ";
+  return t.titlePath.join(sep);
+}
+```
+
+and add, above `buildFilter`:
+
+```ts
+/** `./pkg` for each directory a selected Go test lives in. */
+function goPackages(tests: TestCase[]): string[] {
+  const dirs = tests.map((t) => {
+    const at = t.file.lastIndexOf("/");
+    return at === -1 ? "./" : `./${t.file.slice(0, at)}`;
+  });
+  return [...new Set(dirs)].sort();
+}
+```
+
+In `buildFilter`, after the `playwright` branch and before the ECMAScript one:
+
+```ts
+  if (framework === "rust") {
+    // `--exact` takes several names in one invocation, and every name came
+    // from cargo's own listing rather than from a path this tool assembled --
+    // a module path one segment wrong selects nothing and says nothing.
+    // Targets are not narrowed: a name that exists in two of them runs in
+    // both, which costs time and cannot lose a test.
+    return { mode: "exact", argv: ["--", "--exact", ...selected.map(fullName)] };
+  }
+
+  if (framework === "go") {
+    // Top-level functions, never subtests. `-run` takes one hierarchical
+    // pattern and a second `-run` replaces the first, so "all of TestA, but
+    // only x and y of TestB" cannot be said; the shape that covers TestB
+    // would silently drop TestA's other subtests. Scoring stays per subtest,
+    // which is what `--json` reports.
+    const parents = [...new Set(selected.map((t) => t.titlePath[0] ?? ""))];
+    const pattern = `^(?:${parents.map(escapeRegExp).join("|")})$`;
+    return { mode: "pattern", argv: ["-run", pattern, ...goPackages(selected)] };
+  }
+```
+
+The `hasDynamic` check below stays where it is: it now only governs the
+ECMAScript runners, which is the only place a dynamic title costs granularity.
+
+In `src/questions.ts`, `displayName` must match:
+
+```ts
+export function displayName(t: TestCase): string {
+  if (t.framework === "rust") return t.titlePath.join("::");
+  if (t.framework === "go") return t.titlePath.join("/");
+  const sep = t.framework === "node" ? " " : " > ";
+  return t.titlePath.join(sep);
+}
+```
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `node --test test/filter.test.ts`
+Expected: PASS, `pass 17`.
+
+- [ ] **Step 5: Hold the commit** — see Task 16, step 11.
+
+---
+
+## Task 18: Rust's listing
+
+**Files:**
+- Create: `src/cargo.ts`
+- Test: `test/cargo.test.ts`
+
+- [ ] **Step 1: Write the failing test**
+
+`test/cargo.test.ts`:
+
+```ts
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { isTestAttribute, modulePrefix, parseCargoList, rustTestsIn } from "../src/cargo.ts";
+
+test("parseCargoList takes the test lines and nothing else", () => {
+  const out = `
+tests::apply_discount::clamps_at_zero: test
+tests::counts_items: test
+some_bench: benchmark
+
+counts_an_empty_slice: test
+`;
+  assert.deepEqual(parseCargoList(out), [
+    "tests::apply_discount::clamps_at_zero",
+    "tests::counts_items",
+    "counts_an_empty_slice",
+  ]);
+});
+
+test("modulePrefix follows Rust's file-to-module rules", () => {
+  assert.deepEqual(modulePrefix("src/lib.rs"), []);
+  assert.deepEqual(modulePrefix("src/main.rs"), []);
+  assert.deepEqual(modulePrefix("src/cart.rs"), ["cart"]);
+  assert.deepEqual(modulePrefix("src/cart/mod.rs"), ["cart"]);
+  assert.deepEqual(modulePrefix("src/cart/discount.rs"), ["cart", "discount"]);
+  // Each integration file is its own crate root, so it contributes no prefix.
+  assert.deepEqual(modulePrefix("tests/integration.rs"), []);
+});
+
+test("isTestAttribute accepts the qualified spellings and refuses the rest", () => {
+  assert.equal(isTestAttribute("#[test]"), true);
+  assert.equal(isTestAttribute("#[tokio::test]"), true);
+  assert.equal(isTestAttribute("#[async_std::test]"), true);
+  assert.equal(isTestAttribute("#[cfg(test)]"), false);
+  assert.equal(isTestAttribute("#[case(1)]"), false);
+});
+
+test("rustTestsIn reports each test's module path and line", () => {
+  const src = `
+#[cfg(test)]
+mod tests {
+    mod apply_discount {
+        #[test]
+        fn clamps_at_zero() {}
+        #[tokio::test]
+        async fn halves_the_total() {}
+    }
+    #[test]
+    fn counts_items() {}
+    fn not_a_test() {}
+}
+`;
+  const found = rustTestsIn(src, "src/lib.rs");
+  assert.deepEqual(
+    [...found.keys()],
+    ["tests::apply_discount::clamps_at_zero", "tests::apply_discount::halves_the_total", "tests::counts_items"],
+  );
+  assert.equal(found.get("tests::counts_items")!.line, 11);
+  assert.equal(found.get("tests::counts_items")!.file, "src/lib.rs");
+});
+
+test("rustTestsIn prefixes by the file's own module path", () => {
+  const src = "#[test]\nfn a() {}\n";
+  assert.deepEqual([...rustTestsIn(src, "src/cart/discount.rs").keys()], ["cart::discount::a"]);
+  assert.deepEqual([...rustTestsIn(src, "tests/integration.rs").keys()], ["a"]);
+});
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `node --test test/cargo.test.ts`
+Expected: FAIL, `Cannot find module '../src/cargo.ts'`.
+
+- [ ] **Step 3: Write the implementation**
+
+`src/cargo.ts`:
+
+```ts
+/**
+ * Rust's tests: names from cargo, locations from the source.
+ *
+ * `cargo test -- --exact` is unforgiving. A module path reconstructed one
+ * segment wrong matches nothing, the run is green, and nothing says a test was
+ * skipped -- so the names that reach the filter are the ones cargo printed,
+ * never ones this tool assembled. Cargo has to build the test targets to list
+ * them, which is work a run would do anyway.
+ *
+ * The source still has something cargo's listing does not: where each test
+ * is. Matching the two by full path gives a file and a line, which is what
+ * lets a test whose own body sits in the diff be selected without being
+ * asked about. A name cargo listed and no `#[test]` function accounts for --
+ * anything a macro generated -- keeps no location and is scored instead.
+ */
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { parse } from "@ast-grep/napi";
+import { registerLanguages } from "./languages.ts";
+import type { TestCase } from "./types.ts";
+
+const execFileAsync = promisify(execFile);
+
+/** Where a test is. */
+export interface Location {
+  file: string;
+  line: number;
+  endLine: number;
+}
+
+/** `#[test]`, `#[tokio::test]`, `#[async_std::test]` -- but not `#[cfg(test)]`. */
+const TEST_ATTRIBUTE = /^#\[\s*(?:[A-Za-z_]\w*\s*::\s*)*test\s*\]$/;
+
+export function isTestAttribute(text: string): boolean {
+  return TEST_ATTRIBUTE.test(text);
+}
+
+/** The `name: test` lines of `cargo test -- --list`, without the suffix. */
+export function parseCargoList(stdout: string): string[] {
+  const out: string[] = [];
+  for (const line of stdout.split("\n")) {
+    const m = /^(\S+): test$/.exec(line.trim());
+    if (m) out.push(m[1]!);
+  }
+  return out;
+}
+
+/**
+ * The module path a file contributes, by Rust's file-to-module rules.
+ *
+ * `src/lib.rs` and `src/main.rs` are crate roots and contribute nothing;
+ * `mod.rs` names its directory; every file under `tests/`, `benches/` and
+ * `examples/` is its own crate root. A `#[path]` attribute can override all of
+ * this, and is rare enough that a name it moves simply goes unlocated.
+ */
+export function modulePrefix(file: string): string[] {
+  const m = /^(src|tests|benches|examples)\/(.+)\.rs$/.exec(file);
+  if (!m) return [];
+  if (m[1] !== "src") return [];
+  const parts = m[2]!.split("/");
+  const last = parts.at(-1)!;
+  if (last === "lib" || last === "main" || last === "mod") parts.pop();
+  return parts;
+}
+
+/** Every `#[test]` function in one file, keyed by its full module path. */
+export function rustTestsIn(source: string, file: string): Map<string, Location> {
+  registerLanguages();
+  const root = parse("rust", source).root();
+  const out = new Map<string, Location>();
+
+  const mods = root.findAll({ rule: { kind: "mod_item" } as never }).map((n) => ({
+    name: n.field("name")?.text() ?? "",
+    start: n.range().start.index,
+    end: n.range().end.index,
+  }));
+
+  for (const fn of root.findAll({ rule: { kind: "function_item" } as never })) {
+    // Attributes are siblings preceding the item, nearest last.
+    let isTest = false;
+    for (const prev of fn.prevAll()) {
+      if (prev.kind() !== "attribute_item") break;
+      if (isTestAttribute(prev.text())) isTest = true;
+    }
+    if (!isTest) continue;
+
+    const range = fn.range();
+    const chain = mods
+      .filter((m) => m.start <= range.start.index && m.end >= range.end.index)
+      .sort((a, b) => a.start - b.start)
+      .map((m) => m.name);
+
+    const path = [...modulePrefix(file), ...chain, fn.field("name")?.text() ?? ""].join("::");
+    out.set(path, { file, line: range.start.line + 1, endLine: range.end.line + 1 });
+  }
+  return out;
+}
+
+/** `git ls-files` for the crate's Rust sources. */
+async function rustFiles(cwd: string): Promise<string[]> {
+  const { stdout } = await execFileAsync("git", ["ls-files", "-z", "--", "*.rs"], {
+    cwd,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return stdout.split("\0").filter((f) => f !== "");
+}
+
+/**
+ * Ask cargo what tests exist. This builds the test targets.
+ *
+ * `--quiet` keeps cargo's own progress off stdout; the listing is what is
+ * left. A failure to build is not something to work around -- it is reported
+ * so the run can fall back to everything.
+ */
+export async function cargoList(cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("cargo", ["test", "--quiet", "--", "--list"], {
+    cwd,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return stdout;
+}
+
+export async function listRustTests(cwd: string): Promise<TestCase[]> {
+  const names = parseCargoList(await cargoList(cwd));
+
+  const located = new Map<string, Location>();
+  for (const file of await rustFiles(cwd)) {
+    const source = await readFile(join(cwd, file), "utf8");
+    for (const [path, at] of rustTestsIn(source, file)) located.set(path, at);
+  }
+
+  return names.map((name) => {
+    const at = located.get(name);
+    return {
+      file: at?.file ?? "",
+      titlePath: name.split("::"),
+      line: at?.line ?? 0,
+      endLine: at?.endLine ?? 0,
+      framework: "rust" as const,
+      dynamic: false,
+    };
+  });
+}
+```
+
+- [ ] **Step 4: Run to verify it passes**
+
+Run: `node --test test/cargo.test.ts`
+Expected: PASS, `pass 5`.
+
+- [ ] **Step 5: The whole tree type-checks again**
+
+Run: `pnpm exec tsc --noEmit`
+Expected: clean. `discover.ts` can now resolve `./cargo.ts`.
+
+Run: `node --test "test/*.test.ts"`
+Expected: `tests 100 / pass 100 / fail 0` (88 + 5 Go + 5 cargo + 5 filter, less the two filter tests that were already counted — report the real number rather than forcing this one).
+
+- [ ] **Step 6: Commit Tasks 16, 17 and 18 together**
+
+```bash
+git add package.json pnpm-lock.yaml src test
+git commit -m "feat: add Rust and Go"
+```
+
+---
+
+## Task 19: Wiring, end to end, and the documentation
+
+**Files:**
+- Modify: `src/cli.ts`, `README.md`
+- Test: `test/e2e-langs.test.ts`
+
+- [ ] **Step 1: Let the CLI name the two new formats**
+
+In `src/cli.ts`:
+
+```ts
+const FORMATS: readonly string[] = ["vitest", "jest", "node", "playwright", "rust", "go", "auto"];
+```
+
+and in `HELP`, the `--format` line becomes:
+
+```
+  --format <name>     vitest | jest | node | playwright | rust | go | auto  (default: auto)
+```
+
+with this added under Examples:
+
+```
+  jev-test-filter --base main --format go --exec -- go test
+  jev-test-filter --base main --format rust --exec -- cargo test
+```
+
+and this note after them:
+
+```
+Rust is never discovered automatically: listing its tests builds the test
+targets, so it happens only under --format rust.
+```
+
+- [ ] **Step 2: Write the end-to-end test**
+
+`test/e2e-langs.test.ts`:
+
+```ts
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { extractGoTests } from "../src/extract-go.ts";
+import { rustTestsIn } from "../src/cargo.ts";
+import { buildFilter } from "../src/filter.ts";
+import type { Selection, TestCase } from "../src/types.ts";
+
+const HERE = new URL(".", import.meta.url).pathname;
+
+function sel(all: TestCase[], selected: TestCase[]): Selection {
+  return {
+    all,
+    selected,
+    verdicts: all.map((t, i) => ({
+      id: `q${i}`,
+      test: t,
+      answer: null,
+      reason: selected.includes(t) ? "scored" : "below",
+      selected: selected.includes(t),
+    })),
+    fallback: null,
+  };
+}
+
+test("the go fixture yields the names go test prints", async () => {
+  const file = "test/fixtures/go/cart_test.go";
+  const source = await readFile(join(HERE, "fixtures/go/cart_test.go"), "utf8");
+  const all = extractGoTests(source, file);
+  assert.deepEqual(all.map((t) => t.titlePath.join("/")), [
+    "TestApplyDiscount/clamps at zero",
+    "TestApplyDiscount/halves the total",
+    "TestItemCount",
+  ]);
+  const f = buildFilter(sel(all, [all[0]!]), "go");
+  // Selecting one subtest names its whole parent, and only that parent.
+  assert.deepEqual(f.argv, ["-run", "^(?:TestApplyDiscount)$", "./test/fixtures/go"]);
+});
+
+test("the rust fixture's module paths match what cargo would print", async () => {
+  const file = "test/fixtures/rust/lib.rs";
+  const source = await readFile(join(HERE, "fixtures/rust/lib.rs"), "utf8");
+  const found = rustTestsIn(source, file);
+  // `test/fixtures/rust/lib.rs` is not under `src/`, so it contributes no
+  // prefix; the chain is the one the `mod`s declare.
+  assert.deepEqual([...found.keys()], [
+    "tests::apply_discount::clamps_at_zero",
+    "tests::apply_discount::halves_the_total",
+    "tests::counts_items",
+  ]);
+});
+```
+
+- [ ] **Step 3: Write the two fixtures**
+
+`test/fixtures/go/cart_test.go`:
+
+```go
+package cart
+
+import "testing"
+
+func TestApplyDiscount(t *testing.T) {
+	t.Run("clamps at zero", func(t *testing.T) {})
+	t.Run("halves the total", func(t *testing.T) {})
+}
+
+func TestItemCount(t *testing.T) {}
+```
+
+`test/fixtures/rust/lib.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    mod apply_discount {
+        #[test]
+        fn clamps_at_zero() {}
+        #[test]
+        fn halves_the_total() {}
+    }
+    #[test]
+    fn counts_items() {}
+}
+```
+
+The Go fixture ends in `_test.go`, so `findTestFiles` collects it and this
+repository gains a fourth framework. That is the same situation the Vitest and
+Playwright fixtures already create and needs no new handling — `--format` was
+always the answer.
+
+- [ ] **Step 4: Run the test**
+
+Run: `node --test test/e2e-langs.test.ts`
+Expected: PASS, `pass 2`.
+
+Run: `node --test "test/*.test.ts"`
+Expected: everything green. Report the total.
+
+- [ ] **Step 5: Verify against real cargo and real go**
+
+Neither is automated — both need the toolchains. Run them once and record what
+you saw.
+
+```bash
+cd <a scratch go module with a failing test caused by an edit>
+jev-test-filter --format go --exec -- go test ./...
+```
+
+```bash
+cd <a scratch cargo crate with a failing test caused by an edit>
+jev-test-filter --format rust --exec -- cargo test
+```
+
+Each must run fewer tests than the unfiltered command and must still include
+the test the edit breaks.
+
+- [ ] **Step 6: Update the README**
+
+The per-framework table gains two rows, stating exactly what was measured:
+
+- Rust: names come from `cargo test -- --list`, selection is
+  `cargo test -- --exact <names>`, and listing builds the test targets, which
+  is why `--format rust` is required rather than automatic.
+- Go: scoring is per subtest, selection is per top-level function, because
+  `-run` takes one hierarchical pattern and a second `-run` replaces the first.
+
+Known limitations gains:
+
+- A Go subtest whose name is not a literal cannot be named; its parent is
+  selected whole. Two subtests whose names differ only by a space versus an
+  underscore collide in `go test`'s own naming and cannot be told apart at all.
+- A Rust test a macro generated is listed by cargo but has no location, so it
+  is scored rather than selected for free when the diff touches it.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/cli.ts test README.md
+git commit -m "feat: wire up Rust and Go, and document what each runner does"
+```
+
 ## Self-review notes
 
 - Spec coverage: every module in the spec's table has a task (2–12); the fail-safe list is implemented in `run.ts` and exercised in Task 11; the verified runner behaviour is implemented in `filter.ts` and re-checked end to end in Task 13; the repository conventions are Task 1 and Task 14.
