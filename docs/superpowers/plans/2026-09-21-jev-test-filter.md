@@ -1874,6 +1874,11 @@ test("Pacer waits until the bucket can pay and settles to the real count", () =>
   assert.equal(p.available(0), 900);
 });
 
+test("Pacer treats a backwards clock as no elapsed time", () => {
+  const p = new Pacer(1000, 1000, 1_000_000);
+  assert.equal(p.available(999_000), 1000);
+});
+
 test("mapLimit preserves input order", async () => {
   const out = await mapLimit([3, 1, 2], 2, async (n) => {
     await new Promise((r) => setTimeout(r, n));
@@ -1940,10 +1945,33 @@ export interface Spend {
 
 4. Keep `DEFAULT_CONCURRENCY`, `DEFAULT_TOKENS_PER_SECOND`, `DEFAULT_TOKEN_BURST`, `USD_PER_MTOK` and every comment that explains how they were measured. They are the record of a measurement this package cannot repeat.
 
+5. Fix a latent bug in `Pacer#refill`: it assumes the clock only moves forward. Clamp the elapsed time at zero.
+
+```ts
+  private refill(now: number): void {
+    // A clock that goes backwards -- an NTP step, a suspended laptop waking --
+    // must not DRAIN the mirror. Unclamped, a one-second backwards jump takes
+    // a second's worth of refill out of the bucket, and the client then waits
+    // for a limit the server is not imposing. Treat it as no elapsed time.
+    const elapsed = Math.max(0, now - this.at);
+    this.level = Math.min(this.burst, this.level + (elapsed / 1000) * this.rate);
+    this.at = now;
+  }
+```
+
+This is a divergence from jev-lint, not a port artefact. It is worth reporting upstream.
+
+6. Fix the one place `noUncheckedIndexedAccess` rejects. In `askSplitting`:
+
+```ts
+        // `part` is a slice of this object's own keys, so the lookup cannot miss.
+        const subset = Object.fromEntries(part.map((n) => [n, questions[n]!]));
+```
+
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `node --test test/jev.test.ts`
-Expected: PASS, `pass 7`.
+Expected: PASS, `pass 8`.
 
 - [ ] **Step 5: Commit**
 
