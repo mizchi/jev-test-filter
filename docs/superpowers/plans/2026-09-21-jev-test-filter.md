@@ -2154,6 +2154,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { collect, score, replay, pickFramework } from "../src/run.ts";
 import type { AskClient } from "../src/jev.ts";
+import { testId } from "../src/types.ts";
 import type { TestCase } from "../src/types.ts";
 
 function mk(file: string, path: string[], over: Partial<TestCase> = {}): TestCase {
@@ -2201,10 +2202,12 @@ test("score leaves an unanswered question null rather than inventing a zero", as
 });
 
 test("collect pairs each test with whether the diff touched it", () => {
-  const tests = [mk("a.test.ts", ["edited"], { line: 10, endLine: 20 }), mk("a.test.ts", ["untouched"], { line: 40, endLine: 44 })];
+  const edited = mk("a.test.ts", ["edited"], { line: 10, endLine: 20 });
+  const untouched = mk("a.test.ts", ["untouched"], { line: 40, endLine: 44 });
   const ranges = new Map([["a.test.ts", [[12, 13]] as Array<[number, number]>]]);
-  const touched = collect(tests, ranges);
-  assert.equal(touched.size, 1);
+  // Which one, not how many: a `collect` that returned the wrong test would
+  // satisfy a size check and quietly run the wrong half of the suite.
+  assert.deepEqual([...collect([edited, untouched], ranges)], [testId(edited)]);
 });
 
 test("replay re-gates a record without a client", () => {
@@ -2424,6 +2427,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   if (opts.dryRun) {
     selection = everything(all, "--dry-run: no questions were asked");
   } else {
+    let failure: string | null = null;
     try {
       const client = opts.client ?? new Jev();
       answers = await score(all, state, {
@@ -2432,10 +2436,12 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
         ...(opts.batchSize === undefined ? {} : { batchSize: opts.batchSize }),
       });
       spent = client.spent;
-      selection = gate(all, answers, touched, opts);
     } catch (err: unknown) {
-      selection = everything(all, `jev failed: ${err instanceof Error ? err.message : String(err)}`);
+      failure = `jev failed: ${err instanceof Error ? err.message : String(err)}`;
     }
+    // Gating is pure and offline, so it stays outside the try: a bug in the
+    // gate must not be reported to the user as a network failure.
+    selection = failure === null ? gate(all, answers, touched, opts) : everything(all, failure);
   }
 
   // A truncated diff that still deselects most of the suite is a selection
