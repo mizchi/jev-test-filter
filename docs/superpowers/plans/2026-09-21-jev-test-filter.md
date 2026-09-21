@@ -23,6 +23,67 @@ Do not re-derive these; they were measured on this machine.
 - `node --test "test/**/*.test.ts"` runs TypeScript directly on Node 24 with no flag.
 - `pkf` 0.12.0 runs a `Taskfile.pkl` that amends `pkfire@0.12.3`.
 
+
+---
+
+# Rust and Go
+
+Everything below was measured on cargo 1.98.0 and go 1.26.2. Do not re-derive it.
+
+## What the two runners actually do
+
+| | `cargo test` | `go test` |
+| --- | --- | --- |
+| Native list | `-- --list` prints `module::path::name: test`, complete, including macro-generated tests | `-list '.*'` prints only top-level `TestXxx`; subtests are invisible to it |
+| Filter | `-- --exact A B C`, several exact names in one invocation | `-run <regexp>`, split at `/` into one pattern per nesting level |
+| Repeated filter flags | several positional names after `--exact` all apply | a second `-run` **replaces** the first; only the last survives |
+| Name hazard | one wrong character in the module path selects nothing, silently | a subtest's spaces become underscores, and two subtests that collide after that get `#01` appended and cannot be named apart |
+| Needs a build | yes | yes |
+
+Two further measurements that shape the design:
+
+- Go rewrites the **pattern** as well as the name, so `-run '^TestN$/^a b$'` matches
+  the subtest declared as `t.Run("a b", ...)`. Either spelling works.
+- A Go level pattern only constrains tests that *have* that level:
+  `-run '^(TestA|TestB)$/^sub$'` runs all of `TestB` when `TestB` has no subtests.
+  It does **not** save a `TestB` that has subtests of its own -- those would be
+  filtered to `sub`.
+
+## Where the tests come from
+
+Hybrid, because the two runners fail differently.
+
+**Rust: names from cargo, locations from ast-grep.** `--exact` is unforgiving —
+a module path reconstructed one segment wrong selects nothing and says nothing —
+so the names that go into the filter are the ones `cargo test -- --list` printed,
+never ones this tool assembled. A build is needed either way before tests can run.
+
+ast-grep then supplies file and line by matching each listed name against the
+`#[test]` functions it finds, so that a test whose own body is in the diff is
+still selected for free. A name cargo listed and ast-grep could not place — a
+`rstest` case, anything macro-generated — keeps `file: ""` and `line: 0`,
+which no changed range can overlap, so it is scored rather than dropped.
+
+**Go: static extraction.** `-list` cannot see subtests, so it would have to be
+supplemented anyway. `func TestXxx` is a leaf when it contains no `t.Run`, and a
+suite when it does; a `t.Run` whose name is not a literal — the table-driven
+idiom — is `dynamic`, exactly as an interpolated Vitest title is.
+
+## Where the filter goes
+
+**Rust** is `cargo test -- --exact <names...>`, one invocation. Targets are not
+narrowed: a name that exists in two targets runs in both, which costs time and
+cannot lose a test.
+
+**Go scores per subtest and filters per top-level function.** `-run` takes one
+hierarchical pattern and a second `-run` replaces the first, so "all of `TestA`,
+but only `x` and `y` of `TestB`" cannot be expressed. Appending a subtest level
+to cover `TestB` would silently drop `TestA`'s other subtests — an
+under-selection, the one error this tool must not make. So the emitted pattern
+names the top-level functions of the selected tests and nothing more. `--json`
+still reports the per-subtest score, which is the better signal and what a
+reader wants to see.
+
 ---
 
 ## File structure
@@ -32,7 +93,10 @@ Do not re-derive these; they were measured on this machine.
 | `src/types.ts` | The contract: `Framework`, `TestCase`, `Answer`, `Verdict`, `Selection`, `testId` |
 | `src/diff.ts` | `git diff` to changed line ranges and the raw diff text |
 | `src/framework.ts` | Test-file discovery, grammar choice, per-file framework detection |
-| `src/extract.ts` | ast-grep rules and `extractTests` |
+| `src/extract.ts` | ast-grep rules and `extractTests`, for ECMAScript |
+| `src/languages.ts` | Registers the Rust and Go grammars with ast-grep, once |
+| `src/extract-go.ts` | `func TestXxx` and its `t.Run` subtests |
+| `src/cargo.ts` | `cargo test -- --list`, and matching its names to `#[test]` locations |
 | `src/state.ts` | Diff to a Jev `state` inside the 32Ki budget |
 | `src/questions.ts` | `TestCase` to a score question; answer parsing |
 | `src/gate.ts` | Answers to a `Selection`; the only thresholds in the program |
