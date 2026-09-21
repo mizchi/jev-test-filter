@@ -125,12 +125,30 @@ vitest run $(jev-test-filter --base main)
 eval "vitest run $(jev-test-filter --base main)"
 ```
 
-Empty output is also ambiguous: both "run everything" (`mode: "all"`, including
-every fail-safe) and "run nothing" (`mode: "none"`) print nothing, because both
-mean "no arguments". A shell cannot tell them apart, so an empty line fed to a
-runner runs the whole suite in either case. `--exec` handles it — on `none` it
-prints `nothing selected; not running` and does not start the command — and
-`--json` reports `mode` explicitly.
+An empty line on stdout is what "run everything" and "run nothing" both look
+like, because both mean "no arguments". The exit code tells them apart:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Arguments were printed, or everything is to be run and there are none. Run the command. |
+| 3 | Nothing was selected. Do not run the command; there is nothing to run. |
+| 2 | Bad arguments, e.g. `unknown --format mocha`. |
+| 1 | The tool failed, e.g. the tests span more than one framework and no `--format` was given. |
+
+So the stdout form is used like this:
+
+```
+ARGS=$(jev-test-filter --base main --format node)
+case $? in
+  0) eval "node --test $ARGS" ;;
+  3) echo "no test can be affected by this change" ;;
+  *) exit 1 ;;
+esac
+```
+
+`--exec` and `--json` always exit 0 when the tool itself succeeded, because
+neither is ambiguous: `--exec` simply does not start the command and prints
+`nothing selected; not running`, and `--json` reports `"mode": "none"`.
 
 Prefer `--exec`. It exists so that nobody has to get this right.
 
@@ -192,7 +210,7 @@ The `mode` field in `--json` names which of five shapes came out:
 | `locations` | `file:line`… | Playwright. |
 | `files` | files | A name pattern could not express the selection, so whole files were chosen. This happens when a selected test has a non-literal title, or when more than 80% of the suite was selected and the alternation would not be worth it. |
 | `all` | *(empty)* | Run everything. Either every test was selected, or a fail-safe fired. |
-| `none` | *(empty)* | Nothing was selected. With `--exec` the command is not run at all. |
+| `none` | *(empty)* | Nothing was selected. `--exec` does not start the command; the stdout form exits 3. |
 
 ## How a test is scored
 
@@ -260,9 +278,11 @@ runs Node's default discovery, not your glob. There is no way to supply a glob
 only on the fallback path: on the selected path the tool appends the files it
 chose, and your glob would sit next to them and pull the whole suite back in.
 
-The exit code is 0 on every fail-safe path. One condition is *not* a fail-safe
-and does exit non-zero: a repository whose tests span more than one framework,
-with no `--format` (see Known limitations).
+A fail-safe is not an error: the exit code is 0 on every path above, because
+"run everything" is a perfectly good answer. Exit 3 is not a fail-safe either —
+it is the opposite, a complete scoring that selected nothing. The one condition
+that really is an error is a repository whose tests span more than one
+framework with no `--format`, which exits 1 (see Known limitations).
 
 ## Options
 
@@ -300,11 +320,12 @@ A replay reports `"spent": null` because it spent nothing, and it needs no API
 key. It writes no new record, and `--format` has no effect on it — the
 framework comes from the record.
 
-Two things to know about the record. Every run that does *not* use `--replay`
-overwrites it, **including a run that fell back** — so a failed run replaces
-the answers you were about to replay, and the next `--replay` reports that same
-failure. And the record holds every test's title and file path, so add
-`.jev-test-filter/` to your `.gitignore`. It never holds the API key.
+Two things to know about the record. It is one file per repository, and every
+successful run replaces it — but **only** a successful one: a run that falls
+back writes nothing, so `--replay` always has the last scoring that actually
+completed to work on, and an unlucky `HTTP 529` cannot destroy it. And the
+record holds every test's title and file path, so add `.jev-test-filter/` to
+your `.gitignore`. It never holds the API key.
 
 ## Cost and latency
 
