@@ -3051,12 +3051,25 @@ test("node:test really honours the generated filter, in a real process", async (
   // run of the WRONG tests. Node silently ignores `--test-name-pattern` when
   // it follows a positional, which is why `buildFilter` puts the flag first,
   // and this is what holds that ordering in place.
+  //
+  // NODE_TEST_CONTEXT has to go. Node's own test runner sets it in every test
+  // file's environment, and a nested runner that sees it believes it is a
+  // reporter child: it serialises its output down an IPC channel instead of
+  // writing to the stdout pipe, so `res.stdout` comes back empty with a
+  // status of 0. Every assertion below would then be reading "".
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+
   const res = spawnSync(process.execPath, ["--test", ...f.argv], {
     cwd: join(HERE, ".."),
     encoding: "utf8",
+    env,
   });
 
   assert.equal(res.status, 0, res.stderr);
+  // Before the absences: an empty stdout satisfies every `doesNotMatch` below,
+  // so a run that produced no output at all would otherwise read as a pass.
+  assert.ok(res.stdout.length > 0, "the spawned runner wrote nothing to stdout");
   assert.match(res.stdout, /rounds half up/);
   assert.doesNotMatch(res.stdout, /clamps at zero/);
   assert.doesNotMatch(res.stdout, /totals/);
