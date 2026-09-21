@@ -5,9 +5,18 @@
  * Three shapes, because "easy to wire in" means different things in a
  * Makefile, in a shell and in another program:
  *
- *   jev-test-filter --base main                 -> arguments on stdout
  *   jev-test-filter --base main --exec -- vitest run
  *   jev-test-filter --base main --json          -> the whole scoring
+ *   jev-test-filter --base main                 -> arguments on stdout
+ *
+ * `--exec` is the one to reach for, and not merely out of convenience: it
+ * hands the arguments to `spawn` with no shell in between, so nothing can be
+ * re-split. The stdout form cannot offer that. A test name contains spaces
+ * almost by definition, `renderLine` therefore quotes it, and an unquoted
+ * `$(...)` word-splits without re-parsing those quotes -- so
+ * `vitest run $(jev-test-filter)` hands vitest five arguments where one was
+ * meant. The stdout form is for reading and for `eval`, and the help text
+ * says so.
  *
  * Only this file writes to a stream or exits.
  */
@@ -85,7 +94,13 @@ export function parseCliArgs(argv: string[]): CliArgs {
   };
 }
 
-/** Shell-safe single quoting, for a line a human will paste. */
+/**
+ * Shell-safe single quoting, for a line a human will read or `eval`.
+ *
+ * Not for an unquoted `$(...)`: that word-splits without re-parsing quotes,
+ * so a quoted test name arrives as several arguments. `--exec` exists so
+ * that nobody has to get this right.
+ */
 function quote(arg: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
 }
@@ -129,6 +144,7 @@ export function renderJson(res: RunResult): string {
 const HELP = `jev-test-filter — score every test against a git diff and emit runner arguments
 
 Usage:
+  jev-test-filter [options] --exec -- <command...>
   jev-test-filter [options] [paths...]
 
 Options:
@@ -142,6 +158,20 @@ Options:
   --replay <file>     re-gate a recorded run offline (default: .jev-test-filter/last.json)
   --exec -- <cmd...>  append the arguments to <cmd...> and run it
   -h, --help          this text
+
+Examples:
+  jev-test-filter --base main --exec -- vitest run
+  jev-test-filter --base main --format node --exec -- node --test
+  jev-test-filter --base main --json > selection.json
+
+Without --exec the arguments are written to stdout, shell-quoted. They are
+meant to be read, or passed through eval:
+
+  eval "vitest run $(jev-test-filter --base main)"
+
+An unquoted $(...) will not work: a test name contains spaces, so the
+arguments are quoted, and the shell word-splits them without re-parsing the
+quotes. Use --exec instead of working around it.
 
 Environment:
   TYPESAFE_API_KEY    required unless --dry-run or --replay
