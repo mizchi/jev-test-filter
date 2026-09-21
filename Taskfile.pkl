@@ -26,8 +26,8 @@ local typecheck: Task = new {
 /// Unit tests. Node 24 strips the types, so the sources run unbuilt.
 local test: Task = new {
   name = "test"
-  description = "node --test over test/**/*.test.ts"
-  cmd = "node --test \"test/**/*.test.ts\""
+  description = "node --test over test/*.test.ts"
+  cmd = "node --test \"test/*.test.ts\""
   inputs {
     "src/**/*.ts"
     "test/**/*"

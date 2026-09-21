@@ -21,7 +21,7 @@
   "scripts": {
     "build": "tsc && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test": "node --test \"test/*.test.ts\"",
     "prepack": "npm run build"
   },
   "dependencies": { "@ast-grep/napi": "^0.40.0" },
