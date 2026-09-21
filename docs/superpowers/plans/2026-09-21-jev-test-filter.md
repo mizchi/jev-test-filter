@@ -494,6 +494,13 @@ test("touchesChange is true when the test's range overlaps a hunk", () => {
   assert.equal(touchesChange(ranges, "src/other.ts", 11, 13), false);
 });
 
+test("parseUnifiedDiff is not fooled by an added line that looks like a header", () => {
+  const d = ["diff --git a/a.cc b/a.cc", "--- a/a.cc", "+++ b/a.cc", "@@ -1,0 +5,1 @@", "+++ x;"].join("\n");
+  const ranges = parseUnifiedDiff(d);
+  assert.deepEqual(ranges.get("a.cc"), [[5, 5]]);
+  assert.equal(ranges.has("x;"), false);
+});
+
 test("splitDiffByFile keeps each file's own section", () => {
   const parts = splitDiffByFile(DIFF);
   assert.deepEqual([...parts.keys()], ["src/cart.ts", "src/gone.ts"]);
@@ -530,20 +537,36 @@ export type ChangedRanges = Map<string, Array<[number, number]>>;
 /** git's own prefixes, including the `diff.mnemonicPrefix` spellings. */
 const PREFIX = /^[abciwo]\//;
 
-/** Parse the `@@ -a,b +c,d @@` headers of a unified diff. */
+/**
+ * Parse the `@@ -a,b +c,d @@` headers of a unified diff.
+ *
+ * A file header is only read before the section's first hunk. Inside a hunk
+ * every line carries an added or removed marker, so adding the C++ line
+ * `++ x;` produces a body line spelled `+++ x;` -- indistinguishable from a
+ * file header to anything that does not track where it is.
+ */
 export function parseUnifiedDiff(text: string): ChangedRanges {
   const byFile: ChangedRanges = new Map();
   let file: string | null = null;
+  let inHunk = false;
   for (const line of text.split("\n")) {
-    if (line.startsWith("+++ ")) {
+    if (line.startsWith("diff --git ")) {
+      file = null;
+      inHunk = false;
+      continue;
+    }
+    if (!inHunk && line.startsWith("+++ ")) {
       const path = line.slice(4).trim();
       // A post-image of /dev/null is a deletion: nothing in the new tree
-      // changed, so there is nothing here to select tests from.
+      // changed, so there is no line here a test's body can overlap. The
+      // deletion still reaches the model, through `splitDiffByFile`.
       file = path === "/dev/null" ? null : path.replace(PREFIX, "");
       if (file && !byFile.has(file)) byFile.set(file, []);
       continue;
     }
-    if (!file || !line.startsWith("@@")) continue;
+    if (!line.startsWith("@@")) continue;
+    inHunk = true;
+    if (!file) continue;
     const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
     if (!m) continue;
     const start = Number(m[1]);
@@ -577,7 +600,15 @@ export function touchesChange(ranges: ChangedRanges, file: string, line: number,
 }
 
 /**
- * The diff cut into one section per file, keyed by post-image path.
+ * The diff cut into one section per file, keyed by post-image path -- or, for
+ * a file the change deletes, by its pre-image path.
+ *
+ * This is where `parseUnifiedDiff` and this function deliberately part ways.
+ * Ranges answer "which test bodies did the change touch", and a deleted file
+ * has no post-image line any test body can sit on. Sections answer "what
+ * should the model see", and deleting a source file is one of the changes
+ * most likely to break a test -- dropping it would hide the change from the
+ * judgment it matters most to.
  *
  * The state builder drops whole sections to fit its budget, and a section is
  * the smallest piece that still reads as a diff.
@@ -586,11 +617,16 @@ export function splitDiffByFile(text: string): Map<string, string> {
   const out = new Map<string, string>();
   const lines = text.split("\n");
   let buf: string[] = [];
-  let file: string | null = null;
+  let post: string | null = null;
+  let pre: string | null = null;
+  let inHunk = false;
   const flush = () => {
-    if (file && buf.length > 0) out.set(file, buf.join("\n"));
+    const key = post ?? pre;
+    if (key && buf.length > 0) out.set(key, buf.join("\n"));
     buf = [];
-    file = null;
+    post = null;
+    pre = null;
+    inHunk = false;
   };
   for (const line of lines) {
     if (line.startsWith("diff --git ")) {
@@ -599,9 +635,18 @@ export function splitDiffByFile(text: string): Map<string, string> {
       continue;
     }
     buf.push(line);
-    if (line.startsWith("+++ ")) {
+    if (line.startsWith("@@")) {
+      inHunk = true;
+      continue;
+    }
+    // Headers only before the first hunk; see `parseUnifiedDiff`.
+    if (inHunk) continue;
+    if (line.startsWith("--- ")) {
       const path = line.slice(4).trim();
-      file = path === "/dev/null" ? null : path.replace(PREFIX, "");
+      pre = path === "/dev/null" ? null : path.replace(PREFIX, "");
+    } else if (line.startsWith("+++ ")) {
+      const path = line.slice(4).trim();
+      post = path === "/dev/null" ? null : path.replace(PREFIX, "");
     }
   }
   flush();
@@ -639,7 +684,11 @@ export interface Diff {
  * otherwise rename them and the parser's paths would match no file.
  */
 export async function loadDiff({ cwd = process.cwd(), base = null, staged = false }: DiffOptions = {}): Promise<Diff> {
-  const common = ["--no-color", "--no-ext-diff", "--diff-filter=d", "--src-prefix=a/", "--dst-prefix=b/"];
+  // Deletions are NOT filtered out. `parseUnifiedDiff` already drops them
+  // from the ranges, because a deleted file has no post-image line for a test
+  // body to overlap; but removing a source file is exactly the kind of change
+  // the model has to see, so it stays in the text.
+  const common = ["--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/"];
   const range: string[] = [];
   if (staged) range.push("--cached");
   if (base) range.push(`${base}...HEAD`);
@@ -654,7 +703,7 @@ export async function loadDiff({ cwd = process.cwd(), base = null, staged = fals
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `node --test test/diff.test.ts`
-Expected: PASS, `pass 6`.
+Expected: PASS, `pass 7`.
 
 - [ ] **Step 5: Commit**
 
