@@ -3151,6 +3151,133 @@ git commit -m "test: verify the generated filters against every framework's own 
 
 ---
 
+## Task 15: Do not destroy the replay record, and say when nothing was selected
+
+Both of these were found by running `--exec` and `--replay` for the first
+time, in Task 14. Neither is covered by any existing test.
+
+**Files:**
+- Modify: `src/cli.ts`
+- Test: `test/cli.test.ts`
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `test/cli.test.ts`, and add `shouldSaveRecord` and `stdoutExitCode` to
+the existing import from `../src/cli.ts`:
+
+```ts
+test("the stdout form signals that nothing was selected", () => {
+  // An empty argv means "run everything" and an empty argv also means "run
+  // nothing", and stdout cannot tell a shell which. The status can.
+  assert.equal(stdoutExitCode(result([], "none")), 3);
+  assert.equal(stdoutExitCode(result([], "all")), 0);
+  assert.equal(stdoutExitCode(result(["a.test.ts"], "files")), 0);
+});
+
+test("a fallback run does not overwrite the replay record", () => {
+  const good = {
+    version: 1 as const, createdAt: "", base: null, framework: "vitest" as const,
+    tests: [], touched: [], answers: {}, fallback: null,
+  };
+  assert.equal(shouldSaveRecord(good), true);
+  assert.equal(shouldSaveRecord({ ...good, fallback: "jev failed: HTTP 529" }), false);
+});
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `node --test test/cli.test.ts`
+Expected: FAIL, `shouldSaveRecord is not a function` / `stdoutExitCode is not a function`.
+
+- [ ] **Step 3: Write the implementation**
+
+In `src/cli.ts`, add the two helpers and the `RunRecord` type import:
+
+```ts
+import { loadRecord, replay, run, saveRecord } from "./run.ts";
+import type { RunRecord, RunResult } from "./run.ts";
+
+/**
+ * The status the stdout form exits with when nothing was selected.
+ *
+ * An empty argv is what "everything was selected" and "nothing was selected"
+ * both look like on stdout, and the second must not read as the first: a
+ * shell that runs `eval "vitest run $(jev-test-filter)"` on an empty line
+ * runs the WHOLE suite, which is the opposite of what the tool decided.
+ * `--exec` has no such ambiguity, which is why it is the shape to reach for.
+ */
+export const EXIT_NOTHING_SELECTED = 3;
+
+/** The status of the stdout form, which is the only shape that needs one. */
+export function stdoutExitCode(res: RunResult): number {
+  return res.filter.mode === "none" ? EXIT_NOTHING_SELECTED : 0;
+}
+
+/**
+ * Whether this run's record is worth keeping.
+ *
+ * A fallback record holds no answers -- the run never got any, or gave up on
+ * the ones it had. Writing it over the last good record destroys exactly the
+ * material `--replay` exists to re-gate, and it was measured happening: one
+ * `HTTP 529 system_overloaded` replaced a complete scoring, and the next
+ * `--replay` reported the 529 instead of re-gating the earlier answers.
+ */
+export function shouldSaveRecord(record: RunRecord): boolean {
+  return record.fallback === null;
+}
+```
+
+Then, in `main`, guard the save:
+
+```ts
+    await saveRecord(process.cwd(), res.record);
+```
+
+becomes
+
+```ts
+    if (shouldSaveRecord(res.record)) await saveRecord(process.cwd(), res.record);
+```
+
+and the final stdout write returns the new status:
+
+```ts
+  process.stdout.write(`${renderLine(res)}\n`);
+  return stdoutExitCode(res);
+```
+
+`--exec` and `--json` keep returning 0: neither is ambiguous, and neither
+failed.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `node --test test/cli.test.ts`
+Expected: PASS, `pass 10`.
+
+- [ ] **Step 5: Verify the two behaviours by hand**
+
+```bash
+node src/cli.ts --base HEAD~1 --format node; echo "exit: $?"
+```
+
+Expected on a diff that selects nothing: an empty line and `exit: 3`.
+
+```bash
+node src/cli.ts --base HEAD~3 --format node > /dev/null
+cp .jev-test-filter/last.json /tmp/good.json
+TYPESAFE_API_KEY=invalid node src/cli.ts --base HEAD~3 --format node > /dev/null
+diff /tmp/good.json .jev-test-filter/last.json && echo "record survived the failed run"
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/cli.ts test/cli.test.ts
+git commit -m "fix: keep the replay record when a run falls back"
+```
+
+---
+
 ## Task 14: README and release wiring
 
 **Files:**
