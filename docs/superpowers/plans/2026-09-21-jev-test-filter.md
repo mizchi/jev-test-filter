@@ -48,7 +48,9 @@ Do not re-derive these; they were measured on this machine.
 ## Task 1: Project scaffold
 
 **Files:**
-- Create: `package.json`, `tsconfig.json`, `.envrc`, `Taskfile.pkl`, `.secretlintrc.json`, `.secretlintignore`, `README.md`
+- Create: `package.json`, `tsconfig.json`, `.envrc`, `Taskfile.pkl`, `.secretlintrc.json`, `.secretlintignore`
+
+(`README.md` and `LICENSE` are Task 14; nothing here creates them.)
 
 - [ ] **Step 1: Write `package.json`**
 
@@ -262,7 +264,7 @@ dotenv_if_exists .env.local
 - [ ] **Step 7: Verify the task runner**
 
 Run: `pkf run typecheck`
-Expected: `tsc --noEmit` finds no `src/**/*.ts` yet and exits 0. If pkl fails to resolve the package, the message names the version; do not change anything else.
+Expected: tsc reports `TS18003: No inputs were found` and exits 2, because `src/` is still empty. That is the correct outcome here and resolves itself in Task 2. If pkl fails to resolve the package, the message names the version; do not change anything else.
 
 - [ ] **Step 8: Commit**
 
