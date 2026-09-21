@@ -38,7 +38,7 @@ test("vitest gets the files and one anchored alternation", () => {
   const c = mk("y.test.ts", ["Tax", "rounds"]);
   const f = buildFilter(sel([a, b, c], [a, c]), "vitest");
   assert.equal(f.mode, "pattern");
-  assert.deepEqual(f.argv, ["x.test.ts", "y.test.ts", "-t", "^(?:Cart > totals|Tax > rounds)$"]);
+  assert.deepEqual(f.argv, ["-t", "^(?:Cart > totals|Tax > rounds)$", "x.test.ts", "y.test.ts"]);
 });
 
 test("the generated pattern matches exactly the selected names", () => {
@@ -50,7 +50,7 @@ test("the generated pattern matches exactly the selected names", () => {
   ];
   const selected = [all[0]!, all[1]!];
   const f = buildFilter(sel(all, selected), "vitest");
-  const re = new RegExp(f.argv.at(-1)!);
+  const re = new RegExp(f.argv[1]!);
   for (const t of all) {
     assert.equal(re.test(fullName(t)), selected.includes(t), `pattern is wrong for ${fullName(t)}`);
   }
@@ -61,8 +61,16 @@ test("node:test gets a single --test-name-pattern with the space spelling", () =
   const b = mk("x.test.ts", ["Cart", "empties"], { framework: "node" });
   const f = buildFilter(sel([a, b], [a]), "node");
   assert.equal(f.mode, "pattern");
-  assert.deepEqual(f.argv, ["x.test.ts", "--test-name-pattern", "^(?:Cart totals)$"]);
+  assert.deepEqual(f.argv, ["--test-name-pattern", "^(?:Cart totals)$", "x.test.ts"]);
   assert.equal(f.argv.filter((s) => s === "--test-name-pattern").length, 1);
+});
+
+test("the name pattern precedes the files, because node ignores it otherwise", () => {
+  const a = mk("x.test.ts", ["Cart", "totals"], { framework: "node" });
+  const b = mk("x.test.ts", ["Cart", "empties"], { framework: "node" });
+  const f = buildFilter(sel([a, b], [a]), "node");
+  assert.equal(f.argv[0], "--test-name-pattern");
+  assert.equal(f.argv.at(-1), "x.test.ts");
 });
 
 test("playwright is selected by file and line", () => {

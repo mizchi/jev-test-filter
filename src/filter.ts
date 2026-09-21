@@ -90,5 +90,9 @@ export function buildFilter(sel: Selection, framework: Framework, { fileThreshol
 
   const names = [...new Set(selected.map(fullName))];
   const pattern = `^(?:${names.map(escapeRegExp).join("|")})$`;
-  return { mode: "pattern", argv: [...files, flag, pattern] };
+  // The flag goes BEFORE the files, and that is not a style choice. Node's
+  // test runner silently ignores `--test-name-pattern` when it follows a
+  // positional: `node --test a.test.js --test-name-pattern X` runs the whole
+  // file and exits 0. Vitest accepts either order, so one order serves both.
+  return { mode: "pattern", argv: [flag, pattern, ...files] };
 }
