@@ -41,7 +41,7 @@ Do not re-derive these; they were measured on this machine.
 | `src/run.ts` | Orchestration, the answer record, `replay` |
 | `src/cli.ts` | Argument parsing, `--exec`, `--json`, output |
 | `test/*.test.ts` | One test file per source module |
-| `test/fixtures/**` | Test sources the extractor reads; never executed |
+| `test/fixtures/**` | Test sources the extractor reads |
 
 ---
 
@@ -78,7 +78,7 @@ Do not re-derive these; they were measured on this machine.
   "scripts": {
     "build": "tsc && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test": "node --test \"test/*.test.ts\"",
     "prepack": "npm run build"
   },
   "dependencies": { "@ast-grep/napi": "^0.40.0" },
@@ -168,8 +168,8 @@ local typecheck: Task = new {
 /// Unit tests. Node 24 strips the types, so the sources run unbuilt.
 local test: Task = new {
   name = "test"
-  description = "node --test over test/**/*.test.ts"
-  cmd = "node --test \"test/**/*.test.ts\""
+  description = "node --test over test/*.test.ts"
+  cmd = "node --test \"test/*.test.ts\""
   inputs {
     "src/**/*.ts"
     "test/**/*"
@@ -2925,7 +2925,7 @@ git commit -m "feat: add the command line with stdout, --exec, --json and --repl
 This is the task that would have caught the two bugs the spec was written around: a name pattern in the wrong spelling, and a Playwright selection by name.
 
 **Files:**
-- Create: `test/fixtures/vitest/cart.test.ts`, `test/fixtures/node/cart.test.js`, `test/fixtures/playwright/login.spec.ts`
+- Create: `test/fixtures/vitest/cart.test.ts`, `test/fixtures/node/cart.test.cjs`, `test/fixtures/playwright/login.spec.ts`
 - Create: `test/e2e.test.ts`
 
 - [ ] **Step 1: Write the fixtures**
@@ -2945,7 +2945,11 @@ describe("Cart", () => {
 test("top level", () => {});
 ```
 
-`test/fixtures/node/cart.test.js`:
+`test/fixtures/node/cart.test.cjs`. The extension is not incidental: this
+package is `"type": "module"`, so a `.js` file is loaded as ESM and its
+`require` call throws before a single test runs. `.cjs` keeps the CommonJS
+spelling -- which real repositories do use, and which `detectFramework` has to
+read -- and keeps the file executable by the spawned runner below.
 
 ```js
 const { describe, it } = require("node:test");
@@ -3022,7 +3026,7 @@ test("the vitest pattern selects exactly the chosen tests under vitest's own spe
 });
 
 test("the node:test pattern selects exactly the chosen tests under the space spelling", async () => {
-  const all = await load("node/cart.test.js");
+  const all = await load("node/cart.test.cjs");
   assert.equal(all.length, 3);
   const selected = [all[1]!];
   const f = buildFilter(sel(all, selected), "node");
@@ -3038,7 +3042,7 @@ test("the node:test pattern selects exactly the chosen tests under the space spe
 });
 
 test("node:test really honours the generated filter, in a real process", async () => {
-  const all = await load("node/cart.test.js");
+  const all = await load("node/cart.test.cjs");
   const f = buildFilter(sel(all, [all[1]!]), "node");
   assert.equal(f.mode, "pattern");
 
@@ -3073,6 +3077,10 @@ test("playwright is selected by location and every line points at a real test", 
 Run: `node --test test/e2e.test.ts`
 Expected first: FAIL on the fixture paths or counts. Fix the fixture, not the matcher. Then: PASS, `pass 4`.
 
+Then `node --test "test/*.test.ts"` must be `tests 86 / pass 86 / fail 0`. If it
+is larger, the glob is descending into `test/fixtures/` and collecting a file
+that imports a framework this package does not depend on.
+
 - [ ] **Step 4: Verify the patterns against the real runners by hand, once**
 
 These are not automated — they need the runners installed — but run them once and record what you saw in the commit message.
@@ -3086,7 +3094,7 @@ npx vitest run -t '^(?:Cart > applyDiscount > clamps at zero|top level)$' cart.t
 Expected: 2 passed, 2 skipped.
 
 ```bash
-node --test --test-name-pattern '^(?:Cart applyDiscount rounds half up)$' <repo>/test/fixtures/node/cart.test.js
+node --test --test-name-pattern '^(?:Cart applyDiscount rounds half up)$' <repo>/test/fixtures/node/cart.test.cjs
 ```
 
 Expected: `tests 1`, and the reporter shows `rounds half up` only.
@@ -3112,7 +3120,19 @@ MIT, `Copyright (c) 2026 mizchi`.
 
 - [ ] **Step 2: Write `README.md`**
 
-It must contain, in this order: what the tool does in two sentences; an install line; the three invocation shapes; a table of the per-framework selection behaviour copied from the "Facts verified before this plan was written" section above, because it is the part a user will otherwise get wrong; the fail-safe list; and the environment variables. English, per the repository convention.
+It must contain, in this order: what the tool does in two sentences; an install line; the three invocation shapes; a table of the per-framework selection behaviour copied from the "Facts verified before this plan was written" section above, because it is the part a user will otherwise get wrong; the fail-safe list; a "Known limitations" section; and the environment variables. English, per the repository convention.
+
+"Known limitations" must name these three, because each is a thing a user will
+otherwise report as a bug:
+
+- A repository whose tests span more than one framework needs `--format`.
+  There is no single command that runs Vitest and Playwright together, so the
+  tool asks rather than guessing.
+- A test whose title is not a literal -- an interpolated template, a `.each`
+  row -- cannot be named in a pattern. Such tests are always selected, and one
+  of them in the selection drops the whole run to file-level filtering.
+- Selection is static. A test that reaches changed code only through a runtime
+  indirection the source does not show is judged on what the source shows.
 
 - [ ] **Step 3: Verify the package builds and the bin runs**
 
@@ -3129,10 +3149,25 @@ Expected: the help text, then a line on stderr reading `running everything (--dr
 ```bash
 source ~/.profile
 git commit --allow-empty -m "wip" >/dev/null
-node dist/cli.js --base HEAD~1 --json | head -40
+node dist/cli.js --base HEAD~1 --format node --json | head -40
 ```
 
+`--format node` is required here and that is the tool working as designed, not
+a workaround: `test/fixtures/` holds a Vitest file and a Playwright spec, so
+this repository genuinely contains tests of three frameworks, and there is no
+single command that runs all three. A repository with Vitest unit tests and
+Playwright end-to-end specs -- the common arrangement -- needs the same flag.
+
 Expected: JSON with `framework: "node"`, a `spent` block with a non-zero `inputTokens`, and every test carrying a `score` and a `reason`.
+
+Then confirm the emitted filter is honoured rather than trusting the count:
+
+```bash
+node --test $(node dist/cli.js --base HEAD~1 --format node)
+```
+
+Expected: the test count matches the `selected` figure the previous command
+reported, not the `total`.
 
 - [ ] **Step 5: Run the full gate**
 
