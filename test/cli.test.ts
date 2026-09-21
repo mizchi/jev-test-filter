@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseCliArgs, renderLine, renderJson, execArgv } from "../src/cli.ts";
+import { parseCliArgs, renderLine, renderJson, execArgv, shouldSaveRecord, stdoutExitCode } from "../src/cli.ts";
 import type { RunResult } from "../src/run.ts";
 import type { TestCase } from "../src/types.ts";
 
@@ -56,6 +56,23 @@ test("execArgv appends the filter to the command", () => {
 
 test("execArgv refuses to run when nothing was selected", () => {
   assert.equal(execArgv(["vitest", "run"], result([], "none")), null);
+});
+
+test("the stdout form signals that nothing was selected", () => {
+  // An empty argv means "run everything" and an empty argv also means "run
+  // nothing", and stdout cannot tell a shell which. The status can.
+  assert.equal(stdoutExitCode(result([], "none")), 3);
+  assert.equal(stdoutExitCode(result([], "all")), 0);
+  assert.equal(stdoutExitCode(result(["a.test.ts"], "files")), 0);
+});
+
+test("a fallback run does not overwrite the replay record", () => {
+  const good = {
+    version: 1 as const, createdAt: "", base: null, framework: "vitest" as const,
+    tests: [], touched: [], answers: {}, fallback: null,
+  };
+  assert.equal(shouldSaveRecord(good), true);
+  assert.equal(shouldSaveRecord({ ...good, fallback: "jev failed: HTTP 529" }), false);
 });
 
 test("renderJson reports every test with its reason", () => {

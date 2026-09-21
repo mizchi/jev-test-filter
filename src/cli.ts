@@ -25,7 +25,7 @@ import { parseArgs } from "node:util";
 import { displayName } from "./questions.ts";
 import { fullName } from "./filter.ts";
 import { loadRecord, replay, run, saveRecord } from "./run.ts";
-import type { RunResult } from "./run.ts";
+import type { RunRecord, RunResult } from "./run.ts";
 import type { Framework } from "./types.ts";
 
 const FORMATS: readonly string[] = ["vitest", "jest", "node", "playwright", "auto"];
@@ -113,6 +113,35 @@ export function renderLine(res: RunResult): string {
 export function execArgv(cmd: string[], res: RunResult): string[] | null {
   if (res.filter.mode === "none") return null;
   return [...cmd, ...res.filter.argv];
+}
+
+/**
+ * The status the stdout form exits with when nothing was selected.
+ *
+ * An empty argv is what "everything was selected" and "nothing was selected"
+ * both look like on stdout, and the second must not read as the first: a
+ * shell that runs `eval "vitest run $(jev-test-filter)"` on an empty line
+ * runs the WHOLE suite, which is the opposite of what the tool decided.
+ * `--exec` has no such ambiguity, which is why it is the shape to reach for.
+ */
+export const EXIT_NOTHING_SELECTED = 3;
+
+/** The status of the stdout form, which is the only shape that needs one. */
+export function stdoutExitCode(res: RunResult): number {
+  return res.filter.mode === "none" ? EXIT_NOTHING_SELECTED : 0;
+}
+
+/**
+ * Whether this run's record is worth keeping.
+ *
+ * A fallback record holds no answers -- the run never got any, or gave up on
+ * the ones it had. Writing it over the last good record destroys exactly the
+ * material `--replay` exists to re-gate, and it was measured happening: one
+ * `HTTP 529 system_overloaded` replaced a complete scoring, and the next
+ * `--replay` reported the 529 instead of re-gating the earlier answers.
+ */
+export function shouldSaveRecord(record: RunRecord): boolean {
+  return record.fallback === null;
 }
 
 export function renderJson(res: RunResult): string {
@@ -212,7 +241,7 @@ async function main(): Promise<number> {
       ...(args.cutoff === undefined ? {} : { cutoff: args.cutoff }),
       ...(args.concurrency === undefined ? {} : { concurrency: args.concurrency }),
     });
-    await saveRecord(process.cwd(), res.record);
+    if (shouldSaveRecord(res.record)) await saveRecord(process.cwd(), res.record);
   }
 
   if (res.selection.fallback !== null) {
@@ -244,7 +273,7 @@ async function main(): Promise<number> {
   }
 
   process.stdout.write(`${renderLine(res)}\n`);
-  return 0;
+  return stdoutExitCode(res);
 }
 
 // Only run when invoked as a program, so the tests can import the renderers.
