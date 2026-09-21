@@ -25,7 +25,9 @@ export type FilterMode =
   /** Files plus an anchored alternation of full names. */
   | "pattern"
   /** `file:line` positionals. */
-  | "locations";
+  | "locations"
+  /** Exact names, for a runner that does not take a pattern. */
+  | "exact";
 
 export interface FilterArgs {
   mode: FilterMode;
@@ -48,6 +50,8 @@ export function escapeRegExp(s: string): string {
 
 /** The full name as this test's own runner spells it. */
 export function fullName(t: TestCase): string {
+  if (t.framework === "rust") return t.titlePath.join("::");
+  if (t.framework === "go") return t.titlePath.join("/");
   const sep = t.framework === "node" ? " " : " > ";
   return t.titlePath.join(sep);
 }
@@ -63,6 +67,15 @@ function uniqueFiles(tests: TestCase[]): string[] {
   return [...new Set(tests.map((t) => t.file))];
 }
 
+/** `./pkg` for each directory a selected Go test lives in. */
+function goPackages(tests: TestCase[]): string[] {
+  const dirs = tests.map((t) => {
+    const at = t.file.lastIndexOf("/");
+    return at === -1 ? "./" : `./${t.file.slice(0, at)}`;
+  });
+  return [...new Set(dirs)].sort();
+}
+
 export function buildFilter(sel: Selection, framework: Framework, { fileThreshold = 0.8 }: FilterOptions = {}): FilterArgs {
   const { selected, all } = sel;
   // Both of these come before the per-framework dispatch on purpose. When
@@ -75,6 +88,26 @@ export function buildFilter(sel: Selection, framework: Framework, { fileThreshol
 
   if (framework === "playwright") {
     return { mode: "locations", argv: selected.map((t) => `${t.file}:${t.line}`) };
+  }
+
+  if (framework === "rust") {
+    // `--exact` takes several names in one invocation, and every name came
+    // from cargo's own listing rather than from a path this tool assembled --
+    // a module path one segment wrong selects nothing and says nothing.
+    // Targets are not narrowed: a name that exists in two of them runs in
+    // both, which costs time and cannot lose a test.
+    return { mode: "exact", argv: ["--", "--exact", ...selected.map(fullName)] };
+  }
+
+  if (framework === "go") {
+    // Top-level functions, never subtests. `-run` takes one hierarchical
+    // pattern and a second `-run` replaces the first, so "all of TestA, but
+    // only x and y of TestB" cannot be said; the shape that covers TestB
+    // would silently drop TestA's other subtests. Scoring stays per subtest,
+    // which is what `--json` reports.
+    const parents = [...new Set(selected.map((t) => t.titlePath[0] ?? ""))];
+    const pattern = `^(?:${parents.map(escapeRegExp).join("|")})$`;
+    return { mode: "pattern", argv: ["-run", pattern, ...goPackages(selected)] };
   }
 
   const files = uniqueFiles(selected);

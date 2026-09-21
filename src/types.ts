@@ -13,15 +13,23 @@
  * `jest` is separate from `vitest` only so a report can name it; the two share
  * a filter shape exactly.
  */
-export type Framework = "vitest" | "jest" | "node" | "playwright" | "unknown";
+export type Framework = "vitest" | "jest" | "node" | "playwright" | "rust" | "go" | "unknown";
 
 /** One test, as the source declares it. */
 export interface TestCase {
-  /** Repository-relative, POSIX separators. */
+  /**
+   * Repository-relative, POSIX separators. Empty when the location is not
+   * known -- a Rust test cargo listed and no `#[test]` function could be
+   * matched to, such as one a macro generated.
+   */
   file: string;
   /** The enclosing suites outermost first, then the test's own title. */
   titlePath: string[];
-  /** 1-based and inclusive: the range of the test call itself. */
+  /**
+   * 1-based and inclusive: the range of the test call itself. Zero when the
+   * location is not known, which no changed range can overlap, so such a test
+   * is scored rather than selected for free.
+   */
   line: number;
   endLine: number;
   framework: Framework;

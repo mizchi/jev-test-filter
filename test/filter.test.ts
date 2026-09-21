@@ -119,3 +119,47 @@ test("a high selection rate degrades to file-level filtering", () => {
   assert.equal(f.mode, "files");
   assert.equal(f.argv.length, 9);
 });
+
+test("go selects whole top-level functions and narrows to packages", () => {
+  const a = mk("cart/cart_test.go", ["TestApplyDiscount", "clamps at zero"], { framework: "go" });
+  const b = mk("cart/cart_test.go", ["TestApplyDiscount", "halves the total"], { framework: "go" });
+  const c = mk("cart/cart_test.go", ["TestItemCount"], { framework: "go" });
+  const d = mk("tax/tax_test.go", ["TestWithTax"], { framework: "go" });
+  const f = buildFilter(sel([a, b, c, d], [a, d]), "go");
+  assert.equal(f.mode, "pattern");
+  assert.deepEqual(f.argv, ["-run", "^(?:TestApplyDiscount|TestWithTax)$", "./cart", "./tax"]);
+});
+
+test("go names a parent once however many of its subtests are selected", () => {
+  const a = mk("cart/cart_test.go", ["TestApplyDiscount", "clamps at zero"], { framework: "go" });
+  const b = mk("cart/cart_test.go", ["TestApplyDiscount", "halves the total"], { framework: "go" });
+  const c = mk("cart/cart_test.go", ["TestItemCount"], { framework: "go" });
+  const f = buildFilter(sel([a, b, c], [a, b]), "go");
+  assert.deepEqual(f.argv, ["-run", "^(?:TestApplyDiscount)$", "./cart"]);
+});
+
+test("a go test at the module root is named ./", () => {
+  const a = mk("x_test.go", ["TestA"], { framework: "go" });
+  const b = mk("x_test.go", ["TestB"], { framework: "go" });
+  const f = buildFilter(sel([a, b], [a]), "go");
+  assert.deepEqual(f.argv, ["-run", "^(?:TestA)$", "./"]);
+});
+
+test("rust selects by exact path after a double dash", () => {
+  const a = mk("src/lib.rs", ["tests", "apply_discount", "clamps_at_zero"], { framework: "rust" });
+  const b = mk("src/lib.rs", ["tests", "counts_items"], { framework: "rust" });
+  const c = mk("", ["macro_generated"], { framework: "rust", line: 0, endLine: 0 });
+  const f = buildFilter(sel([a, b, c], [a, c]), "rust");
+  assert.equal(f.mode, "exact");
+  assert.deepEqual(f.argv, ["--", "--exact", "tests::apply_discount::clamps_at_zero", "macro_generated"]);
+});
+
+test("a dynamic go subtest does not drop the run to whole files", () => {
+  // Go already filters at the top level, so a nameless subtest costs nothing
+  // extra: its parent is named either way.
+  const a = mk("cart/cart_test.go", ["TestTable", ""], { framework: "go", dynamic: true });
+  const b = mk("cart/cart_test.go", ["TestItemCount"], { framework: "go" });
+  const f = buildFilter(sel([a, b], [a]), "go");
+  assert.equal(f.mode, "pattern");
+  assert.deepEqual(f.argv, ["-run", "^(?:TestTable)$", "./cart"]);
+});

@@ -46,6 +46,8 @@ export function questionId(i: number): string {
  * its reporter prints it.
  */
 export function displayName(t: TestCase): string {
+  if (t.framework === "rust") return t.titlePath.join("::");
+  if (t.framework === "go") return t.titlePath.join("/");
   const sep = t.framework === "node" ? " " : " > ";
   return t.titlePath.join(sep);
 }

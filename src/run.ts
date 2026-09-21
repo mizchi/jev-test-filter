@@ -11,8 +11,7 @@ import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadDiff, touchesChange } from "./diff.ts";
 import type { ChangedRanges } from "./diff.ts";
-import { detectFramework, findTestFiles } from "./framework.ts";
-import { extractTests } from "./extract.ts";
+import { discoverTests } from "./discover.ts";
 import { buildState } from "./state.ts";
 import type { StatePayload } from "./state.ts";
 import { buildQuestion, questionId, readAnswer } from "./questions.ts";
@@ -154,14 +153,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   const cwd = opts.cwd ?? process.cwd();
   const diff = await loadDiff({ cwd, base: opts.base ?? null, staged: opts.staged ?? false });
 
-  const files = await findTestFiles(cwd, opts.paths ?? []);
-  const all: TestCase[] = [];
-  for (const file of files) {
-    const source = await readFile(join(cwd, file), "utf8");
-    const framework = detectFramework(source, file);
-    if (opts.format && framework !== opts.format) continue;
-    all.push(...extractTests(source, file, framework));
-  }
+  const all = await discoverTests(cwd, opts.paths ?? [], opts.format ?? null);
 
   if (all.length === 0) {
     const record: RunRecord = {

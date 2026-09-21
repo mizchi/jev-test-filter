@@ -8,6 +8,12 @@ importers:
 
   .:
     dependencies:
+      '@ast-grep/lang-go':
+        specifier: ^0.0.6
+        version: 0.0.6
+      '@ast-grep/lang-rust':
+        specifier: ^0.0.7
+        version: 0.0.7
       '@ast-grep/napi':
         specifier: ^0.40.0
         version: 0.40.5
@@ -26,6 +32,22 @@ importers:
         version: 5.9.3
 
 packages:
+
+  '@ast-grep/lang-go@0.0.6':
+    resolution: {integrity: sha512-PZap9Rp6t+YKbLjRnFRF5aGBX3/HV9s5Rp7ZPsCM+o3tlTZDo1IqDYnFu+Oeh5Razs2U8K8ccPSJ+GBxalVhWg==}
+    peerDependencies:
+      tree-sitter-cli: 0.25.8
+    peerDependenciesMeta:
+      tree-sitter-cli:
+        optional: true
+
+  '@ast-grep/lang-rust@0.0.7':
+    resolution: {integrity: sha512-CF6jv8XmlVQgr/pFKADM87EkoGiHIrHKsG1wcX2iqgdBX5kW8wH+Zd4GP6SMme2eZogD49f19vRoRTF44iZqzg==}
+    peerDependencies:
+      tree-sitter-cli: 0.25.8
+    peerDependenciesMeta:
+      tree-sitter-cli:
+        optional: true
 
   '@ast-grep/napi-darwin-arm64@0.40.5':
     resolution: {integrity: sha512-2F072fGN0WTq7KI3okuEnkGJVEHLbi56Bw1H6NAMf7j2mJJeQWsRyGOMcyNnUXZDeNdvoMH0OB2a5wwUegY/nQ==}
@@ -88,6 +110,9 @@ packages:
   '@ast-grep/napi@0.40.5':
     resolution: {integrity: sha512-hJA62OeBKUQT68DD2gDyhOqJxZxycqg8wLxbqjgqSzYttCMSDL9tiAQ9abgekBYNHudbJosm9sWOEbmCDfpX2A==}
     engines: {node: '>= 10'}
+
+  '@ast-grep/setup-lang@0.0.6':
+    resolution: {integrity: sha512-aSYZNF5nGQMxnwiA3Lcc8zi0AtpGlug47ADgqCgP/2n7p922FbnW7vo1rbW4kKjW72B/3mDdN7uvYidv8JnPnw==}
 
   '@azu/format-text@1.0.2':
     resolution: {integrity: sha512-Swi4N7Edy1Eqq82GxgEECXSSLyn6GOb5htRFPzBDdUkECGXtlf12ynO5oJSpWKPwCaUssOu7NfhDcCWpIC6Ywg==}
@@ -523,6 +548,14 @@ packages:
 
 snapshots:
 
+  '@ast-grep/lang-go@0.0.6':
+    dependencies:
+      '@ast-grep/setup-lang': 0.0.6
+
+  '@ast-grep/lang-rust@0.0.7':
+    dependencies:
+      '@ast-grep/setup-lang': 0.0.6
+
   '@ast-grep/napi-darwin-arm64@0.40.5':
     optional: true
 
@@ -561,6 +594,8 @@ snapshots:
       '@ast-grep/napi-win32-arm64-msvc': 0.40.5
       '@ast-grep/napi-win32-ia32-msvc': 0.40.5
       '@ast-grep/napi-win32-x64-msvc': 0.40.5
+
+  '@ast-grep/setup-lang@0.0.6': {}
 
   '@azu/format-text@1.0.2': {}
 

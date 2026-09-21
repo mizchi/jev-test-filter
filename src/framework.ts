@@ -24,8 +24,15 @@ export function langFor(file: string): Lang {
 /** `foo.test.ts`, `foo.spec.tsx`, `foo.test.mjs`, and the rest of the family. */
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 
+/** Go's own convention, and the only one `go test` compiles into a test binary. */
+const GO_TEST_FILE = /_test\.go$/;
+
+export function isGoTestFile(file: string): boolean {
+  return GO_TEST_FILE.test(file);
+}
+
 export function isTestFile(file: string): boolean {
-  return TEST_FILE.test(file);
+  return TEST_FILE.test(file) || GO_TEST_FILE.test(file);
 }
 
 /** `require("x")`, with the specifier captured. */
