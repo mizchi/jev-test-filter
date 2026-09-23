@@ -41,9 +41,31 @@ test("extractTests marks an interpolated title dynamic and keeps it", () => {
   assert.equal(found[0]!.dynamic, true);
 });
 
+test("extractTests keeps a test whose title comes from a variable", () => {
+  const src = 'import { test } from "bun:test";\ndescribe("Ref", () => { for (const row of rows) test(row.name, () => {}); });';
+  const found = extractTests(src, "ref.test.ts", "bun");
+  assert.equal(found.length, 1);
+  assert.deepEqual(found[0]!.titlePath, ["Ref", ""]);
+  assert.equal(found[0]!.dynamic, true);
+});
+
+test("extractTests marks a variable suite title dynamic", () => {
+  const src = 'import { test } from "bun:test";\ndescribe(suiteName, () => { test("works", () => {}); });';
+  const found = extractTests(src, "ref.test.ts", "bun");
+  assert.equal(found.length, 1);
+  assert.equal(found[0]!.dynamic, true);
+});
+
 test("extractTests marks an .each row dynamic", () => {
   const src = "import { it } from 'vitest';\nit.each([1,2])('adds %i', () => {});";
   const found = extractTests(src, "a.test.ts", "vitest");
+  assert.equal(found.length, 1);
+  assert.equal(found[0]!.dynamic, true);
+});
+
+test("extractTests keeps .each cases when the table is returned by a call", () => {
+  const src = 'import { test } from "bun:test";\ntest.each(testData())("$testName", async (row) => {});';
+  const found = extractTests(src, "ref.test.ts", "bun");
   assert.equal(found.length, 1);
   assert.equal(found[0]!.dynamic, true);
 });

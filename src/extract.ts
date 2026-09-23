@@ -15,8 +15,8 @@ import type { Framework, TestCase } from "./types.ts";
 
 /** `describe(...)` and its spellings; Playwright's `test.describe` with its own modifiers. */
 const SUITE_CALLEE =
-  "^(x|f)?(describe|suite|context)(\\.(only|skip|todo|concurrent|sequential|shuffle|skipIf|runIf|if|each|for)(\\([^)]*\\))?)*$" +
-  "|^test\\.describe(\\.(serial|parallel|only|skip|fixme|configure)(\\([^)]*\\))?)*$";
+  "^(x|f)?(describe|suite|context)(\\.(only|skip|todo|concurrent|sequential|shuffle|skipIf|runIf|if|each|for)(\\([\\s\\S]*\\))?)*$" +
+  "|^test\\.describe(\\.(serial|parallel|only|skip|fixme|configure)(\\([\\s\\S]*\\))?)*$";
 
 /** The names node:test's context goes by, for `t.test("subtest", fn)`. */
 const SUBTEST_CONTEXT = "(t|ctx|context)";
@@ -30,13 +30,13 @@ const SUBTEST_INSIDE = {
 
 /** `it`/`test` with modifiers; `Deno.test`; node:test's subtest on the context. */
 const TEST_CALLEE =
-  "^(x|f)?(it|test)(\\.(only|skip|todo|concurrent|sequential|fails|fixme|slow|skipIf|runIf|if|todoIf|failsIf|each|for)(\\([^)]*\\))?)*$" +
+  "^(x|f)?(it|test)(\\.(only|skip|todo|concurrent|sequential|fails|fixme|slow|skipIf|runIf|if|todoIf|failsIf|each|for)(\\([\\s\\S]*\\))?)*$" +
   "|^Deno\\.test(\\.(only|ignore))?$" +
   `|^${SUBTEST_CONTEXT}\\.test$`;
 
 const FUNCTION_KINDS = [{ kind: "arrow_function" }, { kind: "function_expression" }, { kind: "generator_function" }];
 
-/** The title, by whichever of the three shapes carries it. */
+/** The title, whether literal, named in an object or function, or computed. */
 const TITLE_ARG = {
   field: "arguments",
   any: [
@@ -52,6 +52,9 @@ const TITLE_ARG = {
       },
     },
     { has: { nthChild: 1, kind: "function_expression", has: { field: "name", pattern: "$TITLE" } } },
+    // A variable or computed title cannot be named by a runner pattern, but
+    // the test still has to be inventoried so the gate can keep its whole file.
+    { has: { nthChild: 1, pattern: "$TITLE" } },
   ],
 };
 
@@ -93,7 +96,7 @@ const SUITE_RULE = {
         { all: [{ has: { field: "function", regex: TEST_CALLEE } }, { has: SUBTEST_INSIDE }] },
       ],
     },
-    { has: { field: "arguments", has: { nthChild: 1, any: [{ kind: "string" }, { kind: "template_string" }], pattern: "$TITLE" } } },
+    { has: TITLE_ARG },
     { has: { field: "arguments", has: { any: FUNCTION_KINDS, pattern: "$BODY" } } },
   ],
 };

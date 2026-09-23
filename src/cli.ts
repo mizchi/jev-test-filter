@@ -21,14 +21,19 @@
  * Only this file writes to a stream or exits.
  */
 import { spawn } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { displayName } from "./questions.ts";
 import { fullName } from "./filter.ts";
+import { loadDiff } from "./diff.ts";
+import { assessSnapshots, findSnapshotChangesInWorktree, loadSnapshotTestSources, snapshotTestFile } from "./snapshot.ts";
+import type { SnapshotReview } from "./snapshot.ts";
 import { loadRecord, RECORD_DIR, RECORD_FILE, replay, run, saveRecord } from "./run.ts";
 import type { RunRecord, RunResult } from "./run.ts";
 import type { Framework } from "./types.ts";
 
-const FORMATS: readonly string[] = ["vitest", "jest", "node", "playwright", "rust", "go", "auto"];
+const FORMATS: readonly string[] = ["vitest", "jest", "node", "bun", "playwright", "rust", "go", "auto"];
 
 /** Where a run leaves its answers, and what a bare `--replay` means. */
 export const DEFAULT_RECORD_PATH = `${RECORD_DIR}/${RECORD_FILE}`;
@@ -42,6 +47,7 @@ export interface CliArgs {
   concurrency: number | undefined;
   json: boolean;
   dryRun: boolean;
+  verifySnapshots: boolean;
   replayPath: string | null;
   exec: string[] | null;
   help: boolean;
@@ -82,6 +88,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
       concurrency: { type: "string" },
       json: { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
+      "verify-snapshots": { type: "boolean", default: false },
       replay: { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
@@ -90,6 +97,9 @@ export function parseCliArgs(argv: string[]): CliArgs {
   const format = String(values.format);
   if (!FORMATS.includes(format)) {
     throw new Error(`unknown --format ${format}; expected one of ${FORMATS.join(", ")}`);
+  }
+  if (values["verify-snapshots"] && (exec !== null || values.replay !== undefined)) {
+    throw new Error("--verify-snapshots cannot be combined with --exec or --replay");
   }
 
   return {
@@ -101,6 +111,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
     concurrency: values.concurrency === undefined ? undefined : Number(values.concurrency),
     json: Boolean(values.json),
     dryRun: Boolean(values["dry-run"]),
+    verifySnapshots: Boolean(values["verify-snapshots"]),
     replayPath: values.replay === undefined ? null : String(values.replay),
     exec,
     help: Boolean(values.help),
@@ -126,6 +137,14 @@ export function renderLine(res: RunResult): string {
 export function execArgv(cmd: string[], res: RunResult): string[] | null {
   if (res.filter.mode === "none") return null;
   return [...cmd, ...res.filter.argv];
+}
+
+/** A Playwright list must exist before its runner can consume --test-list. */
+export async function materializeFilter(res: RunResult, cwd = process.cwd()): Promise<void> {
+  if (res.filter.mode !== "test-list" || !res.filter.testList) return;
+  const path = join(cwd, res.filter.argv[1]!);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${res.filter.testList.join("\n")}\n`, "utf8");
 }
 
 /**
@@ -163,12 +182,14 @@ export function renderJson(res: RunResult): string {
       framework: res.framework,
       mode: res.filter.mode,
       argv: res.filter.argv,
+      ...(res.filter.testList === undefined ? {} : { test_list: res.filter.testList }),
       fallback: res.selection.fallback,
       selected: res.selection.selected.length,
       total: res.selection.all.length,
       spent: res.spent,
       tests: res.selection.verdicts.map((v) => ({
         file: v.test.file,
+        ...(v.test.project === undefined ? {} : { project: v.test.project }),
         name: displayName(v.test),
         pattern_name: fullName(v.test),
         line: v.test.line,
@@ -183,6 +204,13 @@ export function renderJson(res: RunResult): string {
   )}\n`;
 }
 
+export function renderSnapshotReport(review: SnapshotReview): string {
+  if (review.entries.length === 0) return "No changed text snapshots.\n";
+  return `${review.entries.map((entry) =>
+    `${entry.status}\t${entry.file}\t${entry.kind}\tscore=${entry.score ?? "?"}\tconfidence=${entry.confidence ?? "?"}`,
+  ).join("\n")}\n`;
+}
+
 const HELP = `jev-test-filter — score every test against a git diff and emit runner arguments
 
 Usage:
@@ -192,11 +220,12 @@ Usage:
 Options:
   --base <ref>        compare against the merge base with <ref>, as a pull request does
   --staged            use the staged change instead of the working tree
-  --format <name>     vitest | jest | node | playwright | rust | go | auto  (default: auto)
+  --format <name>     vitest | jest | node | bun | playwright | rust | go | auto  (default: auto)
   --cutoff <n>        select at or above this score level (default: 2)
   --concurrency <n>   requests in flight at once
   --json              print the full scoring instead of the arguments
   --dry-run           extract and report without calling Jev
+  --verify-snapshots  review changed Vitest text snapshots without modifying files
   --replay <file>     re-gate a recorded run offline (default: .jev-test-filter/last.json)
   --exec -- <cmd...>  append the arguments to <cmd...> and run it
   -h, --help          this text
@@ -204,6 +233,9 @@ Options:
 Examples:
   jev-test-filter --base main --exec -- vitest run
   jev-test-filter --base main --format node --exec -- node --test
+  jev-test-filter --base main --format bun --exec -- bun test
+  jev-test-filter --base main --format playwright --exec -- npx playwright test
+  jev-test-filter --verify-snapshots --json
   jev-test-filter --base main --format go --exec -- go test
   jev-test-filter --base main --format rust --exec -- cargo test
   jev-test-filter --base main --json > selection.json
@@ -237,6 +269,25 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  if (args.verifySnapshots) {
+    const diff = await loadDiff({ cwd: process.cwd(), base: args.base, staged: args.staged });
+    const revision = args.base ? "HEAD" : args.staged ? ":" : null;
+    const changes = (await findSnapshotChangesInWorktree(diff.text, process.cwd(), revision)).filter((change) =>
+      args.paths.length === 0 || args.paths.some((path) => {
+        const normalized = path.replace(/^\.\//, "").replace(/\/$/, "");
+        const testFile = snapshotTestFile(change);
+        return change.file === normalized || change.file.startsWith(`${normalized}/`)
+          || testFile === normalized || testFile?.startsWith(`${normalized}/`);
+      }));
+    const context = await loadSnapshotTestSources(process.cwd(), changes, 24_000, revision);
+    const review = args.dryRun
+      ? { entries: changes.map((change) => ({ ...change, status: "unknown" as const, score: null, confidence: null })), error: null, spent: null }
+      : await assessSnapshots(diff.text, diff.stat, undefined, changes, context);
+    if (review.error) process.stderr.write(`jev-test-filter: snapshot review incomplete (${review.error})\n`);
+    process.stdout.write(args.json ? `${JSON.stringify(review, null, 2)}\n` : renderSnapshotReport(review));
+    return 0;
+  }
+
   let res: RunResult;
   if (args.replayPath !== null) {
     const record = await loadRecord(args.replayPath);
@@ -256,6 +307,7 @@ async function main(): Promise<number> {
       paths: args.paths,
       format: args.format,
       dryRun: args.dryRun,
+      ...(args.format === "playwright" && args.exec ? { playwrightCommand: args.exec } : {}),
       ...(args.cutoff === undefined ? {} : { cutoff: args.cutoff }),
       ...(args.concurrency === undefined ? {} : { concurrency: args.concurrency }),
     });
@@ -272,6 +324,13 @@ async function main(): Promise<number> {
   if (args.json) {
     process.stdout.write(renderJson(res));
     return 0;
+  }
+
+  try {
+    await materializeFilter(res);
+  } catch (err: unknown) {
+    process.stderr.write(`jev-test-filter: could not write Playwright test list; running everything (${err instanceof Error ? err.message : String(err)})\n`);
+    res.filter = { mode: "all", argv: [] };
   }
 
   if (args.exec) {

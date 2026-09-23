@@ -19,6 +19,7 @@ import type { ScoreQuestion } from "./questions.ts";
 import { gate } from "./gate.ts";
 import type { GateOptions } from "./gate.ts";
 import { buildFilter } from "./filter.ts";
+import { listPlaywrightTests } from "./playwright.ts";
 import type { FilterArgs } from "./filter.ts";
 import { Jev, mapLimit, DEFAULT_CONCURRENCY } from "./jev.ts";
 import type { AskClient, Spend } from "./jev.ts";
@@ -125,6 +126,8 @@ export interface RunOptions extends GateOptions {
   fileThreshold?: number;
   /** Extract and gate but never call Jev; every test scores as missing. */
   dryRun?: boolean;
+  /** When using Playwright, collect its actual test list with this runner command. */
+  playwrightCommand?: string[];
 }
 
 export interface RunResult {
@@ -153,7 +156,20 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   const cwd = opts.cwd ?? process.cwd();
   const diff = await loadDiff({ cwd, base: opts.base ?? null, staged: opts.staged ?? false });
 
-  const all = await discoverTests(cwd, opts.paths ?? [], opts.format ?? null);
+  let all: TestCase[] = [];
+  let discoveryFailure: string | null = null;
+  try {
+    all = opts.format === "playwright" && opts.playwrightCommand
+      ? (await listPlaywrightTests(cwd, opts.playwrightCommand)).filter((t) =>
+          !opts.paths?.length || opts.paths.some((path) => {
+            const normalized = path.replace(/^\.\//, "").replace(/\/$/, "");
+            return t.file === normalized || t.file.startsWith(`${normalized}/`);
+          }))
+      : await discoverTests(cwd, opts.paths ?? [], opts.format ?? null);
+  } catch (err: unknown) {
+    if (opts.format !== "playwright" || !opts.playwrightCommand) throw err;
+    discoveryFailure = `Playwright test listing failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
 
   if (all.length === 0) {
     const record: RunRecord = {
@@ -164,9 +180,9 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
       tests: [],
       touched: [],
       answers: {},
-      fallback: "no tests were extracted",
+      fallback: discoveryFailure ?? "no tests were extracted",
     };
-    const selection = everything([], "no tests were extracted");
+    const selection = everything([], record.fallback!);
     return { selection, framework: record.framework, filter: { mode: "all", argv: [] }, record, spent: null };
   }
 

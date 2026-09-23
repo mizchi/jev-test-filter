@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { collect, score, replay, pickFramework } from "../src/run.ts";
+import { collect, score, replay, pickFramework, run } from "../src/run.ts";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AskClient } from "../src/jev.ts";
 import { testId } from "../src/types.ts";
 import type { TestCase } from "../src/types.ts";
@@ -72,4 +76,17 @@ test("replay re-gates a record without a client", () => {
   };
   assert.deepEqual(replay(record, { cutoff: 2.0 }).selected.map((t) => t.titlePath[0]), ["hot"]);
   assert.deepEqual(replay(record, { cutoff: 1.0 }).selected.map((t) => t.titlePath[0]), ["hot", "mild"]);
+});
+
+test("Playwright の一覧取得に失敗したら絞り込まず全件を実行する", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "jev-playwright-fallback-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd });
+    execFileSync("git", ["-c", "user.name=Eval", "-c", "user.email=eval@example.com", "commit", "-q", "--allow-empty", "-m", "initial"], { cwd });
+    const res = await run({ cwd, format: "playwright", playwrightCommand: ["/missing/playwright"], dryRun: true });
+    assert.equal(res.filter.mode, "all");
+    assert.match(res.selection.fallback!, /Playwright test listing failed/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });

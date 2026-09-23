@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseCliArgs, renderLine, renderJson, execArgv, shouldSaveRecord, stdoutExitCode, DEFAULT_RECORD_PATH } from "../src/cli.ts";
+import { parseCliArgs, renderLine, renderJson, renderSnapshotReport, execArgv, materializeFilter, shouldSaveRecord, stdoutExitCode, DEFAULT_RECORD_PATH } from "../src/cli.ts";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RunResult } from "../src/run.ts";
 import type { TestCase } from "../src/types.ts";
 
@@ -8,7 +11,7 @@ function mk(name: string, over: Partial<TestCase> = {}): TestCase {
   return { file: "a.test.ts", titlePath: [name], line: 1, endLine: 2, framework: "vitest", dynamic: false, ...over };
 }
 
-function result(argv: string[], mode: "all" | "none" | "files" | "pattern" | "locations"): RunResult {
+function result(argv: string[], mode: "all" | "none" | "files" | "pattern" | "locations" | "test-list"): RunResult {
   const t = mk("hot");
   return {
     selection: {
@@ -42,6 +45,22 @@ test("parseCliArgs rejects an unknown format", () => {
   assert.throws(() => parseCliArgs(["--format", "mocha"]), /mocha/);
 });
 
+test("parseCliArgs accepts bun as a test runner", () => {
+  assert.equal(parseCliArgs(["--format", "bun"]).format, "bun");
+});
+
+test("スナップショット確認モードはテスト実行と混ぜない", () => {
+  assert.equal(parseCliArgs(["--verify-snapshots"]).verifySnapshots, true);
+  assert.throws(() => parseCliArgs(["--verify-snapshots", "--exec", "--", "vitest", "run"]), /cannot be combined/);
+});
+
+test("スナップショット確認結果を簡潔に表示する", () => {
+  assert.equal(renderSnapshotReport({
+    entries: [{ file: "src/__snapshots__/cart.test.ts.snap", kind: "external", status: "review", score: 2, confidence: 0.9 }],
+    error: null, spent: null,
+  }), "review\tsrc/__snapshots__/cart.test.ts.snap\texternal\tscore=2\tconfidence=0.9\n");
+});
+
 test("renderLine quotes an argument that needs it", () => {
   assert.equal(renderLine(result(["a.test.ts", "-t", "^(?:Cart > totals)$"], "pattern")), "a.test.ts -t '^(?:Cart > totals)$'");
 });
@@ -56,6 +75,18 @@ test("execArgv appends the filter to the command", () => {
 
 test("execArgv refuses to run when nothing was selected", () => {
   assert.equal(execArgv(["vitest", "run"], result([], "none")), null);
+});
+
+test("Playwright の選択一覧を実行前に書き出す", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "jev-playwright-"));
+  try {
+    const res = result(["--test-list", ".jev-test-filter/playwright-a.txt"], "test-list");
+    res.filter.testList = ["[chromium] > rows.spec.ts > Cart > row alpha"];
+    await materializeFilter(res, cwd);
+    assert.equal(await readFile(join(cwd, res.filter.argv[1]!), "utf8"), "[chromium] > rows.spec.ts > Cart > row alpha\n");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test("the stdout form signals that nothing was selected", () => {

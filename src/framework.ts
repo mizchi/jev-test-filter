@@ -21,8 +21,8 @@ export function langFor(file: string): Lang {
   return Lang.JavaScript;
 }
 
-/** `foo.test.ts`, `foo.spec.tsx`, `foo.test.mjs`, and the rest of the family. */
-const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+/** `foo.test.ts`, `foo.vitest.ts`, `foo.spec.tsx`, and the rest of the family. */
+const TEST_FILE = /\.(?:test|vitest|spec)\.[cm]?[jt]sx?$/;
 
 /** Go's own convention, and the only one `go test` compiles into a test binary. */
 const GO_TEST_FILE = /_test\.go$/;
@@ -90,15 +90,18 @@ function specifiers(source: string, file: string): string[] {
 export function detectFramework(source: string, file = "a.ts"): Framework {
   let vitest = false;
   let node = false;
+  let bun = false;
   let jest = false;
   for (const spec of specifiers(source, file)) {
     if (spec === "@playwright/test" || spec.startsWith("@playwright/test/")) return "playwright";
     if (spec === "vitest" || spec.startsWith("vitest/")) vitest = true;
     else if (spec === "node:test") node = true;
+    else if (spec === "bun:test") bun = true;
     else if (spec === "@jest/globals") jest = true;
   }
   if (vitest) return "vitest";
   if (node) return "node";
+  if (bun) return "bun";
   if (jest) return "jest";
   return "unknown";
 }

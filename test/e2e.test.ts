@@ -94,6 +94,21 @@ test("node:test really honours the generated filter, in a real process", async (
   assert.doesNotMatch(res.stdout, /totals/);
 });
 
+test("bun really runs only the test selected by the generated filter", { skip: spawnSync("bun", ["--version"]).status !== 0 }, async () => {
+  const all = await load("bun/cart.test.ts");
+  assert.equal(all.length, 2);
+  const f = buildFilter(sel(all, [all[0]!]), "bun");
+  assert.equal(f.mode, "pattern");
+
+  const res = spawnSync("bun", ["test", ...f.argv], { cwd: join(HERE, ".."), encoding: "utf8" });
+  const output = `${res.stdout}${res.stderr}`;
+  assert.equal(res.status, 0, output);
+  assert.match(output, /1 pass/);
+  assert.match(output, /1 filtered out/);
+  assert.match(output, /Cart > totals/);
+  assert.doesNotMatch(output, /\(pass\) Cart > empties/);
+});
+
 test("playwright is selected by location and every line points at a real test", async () => {
   const all = await load("playwright/login.spec.ts");
   assert.equal(all.length, 2);

@@ -6,6 +6,7 @@ import { detectFramework, isTestFile, langFor } from "../src/framework.ts";
 test("detectFramework reads the import source", () => {
   assert.equal(detectFramework("import { it } from 'vitest';"), "vitest");
   assert.equal(detectFramework('import { test } from "node:test";'), "node");
+  assert.equal(detectFramework('import { test } from "bun:test";'), "bun");
   assert.equal(detectFramework("import { test } from '@playwright/test';"), "playwright");
   assert.equal(detectFramework("import { it } from '@jest/globals';"), "jest");
 });
@@ -47,6 +48,7 @@ test("langFor picks the grammar from the extension", () => {
 
 test("isTestFile accepts the usual spellings and rejects sources", () => {
   assert.equal(isTestFile("src/cart.test.ts"), true);
+  assert.equal(isTestFile("src/cart.vitest.ts"), true);
   assert.equal(isTestFile("e2e/login.spec.tsx"), true);
   assert.equal(isTestFile("test/a.test.mjs"), true);
   assert.equal(isTestFile("src/cart.ts"), false);

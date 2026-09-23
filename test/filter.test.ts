@@ -65,6 +65,14 @@ test("node:test gets a single --test-name-pattern with the space spelling", () =
   assert.equal(f.argv.filter((s) => s === "--test-name-pattern").length, 1);
 });
 
+test("bun gets its suite and test names separated by a space", () => {
+  const a = mk("cart.test.ts", ["Cart", "totals"], { framework: "bun" });
+  const b = mk("cart.test.ts", ["Cart", "empties"], { framework: "bun" });
+  const f = buildFilter(sel([a, b], [a]), "bun");
+  assert.equal(fullName(a), "Cart totals");
+  assert.deepEqual(f.argv, ["--test-name-pattern", "^(?:Cart totals)$", "cart.test.ts"]);
+});
+
 test("the name pattern precedes the files, because node ignores it otherwise", () => {
   const a = mk("x.test.ts", ["Cart", "totals"], { framework: "node" });
   const b = mk("x.test.ts", ["Cart", "empties"], { framework: "node" });
@@ -80,6 +88,16 @@ test("playwright is selected by file and line", () => {
   const f = buildFilter(sel([a, b, c], [a, c]), "playwright");
   assert.equal(f.mode, "locations");
   assert.deepEqual(f.argv, ["e2e/a.spec.ts:4", "e2e/b.spec.ts:3"]);
+});
+
+test("Playwright の一覧を使うと同じ行の生成テストもプロジェクトごとに指定できる", () => {
+  const a = mk("e2e/rows.spec.ts", ["Cart", "row alpha"], { framework: "playwright", line: 3, runnerFile: "rows.spec.ts", project: "chromium" });
+  const b = mk("e2e/rows.spec.ts", ["Cart", "row beta"], { framework: "playwright", line: 3, runnerFile: "rows.spec.ts", project: "chromium" });
+  const c = mk("e2e/rows.spec.ts", ["Cart", "row alpha"], { framework: "playwright", line: 3, runnerFile: "rows.spec.ts", project: "firefox" });
+  const f = buildFilter(sel([a, b, c], [a]), "playwright");
+  assert.equal(f.mode, "test-list");
+  assert.deepEqual(f.testList, ["[chromium] > rows.spec.ts > Cart > row alpha"]);
+  assert.deepEqual(f.argv.slice(0, 1), ["--test-list"]);
 });
 
 test("selecting every playwright test means no arguments, not a list of locations", () => {

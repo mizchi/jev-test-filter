@@ -13,7 +13,7 @@
  * `jest` is separate from `vitest` only so a report can name it; the two share
  * a filter shape exactly.
  */
-export type Framework = "vitest" | "jest" | "node" | "playwright" | "rust" | "go" | "unknown";
+export type Framework = "vitest" | "jest" | "node" | "bun" | "playwright" | "rust" | "go" | "unknown";
 
 /** One test, as the source declares it. */
 export interface TestCase {
@@ -33,11 +33,14 @@ export interface TestCase {
   line: number;
   endLine: number;
   framework: Framework;
+  /** Playwright project and path relative to its configured rootDir, when listed by the runner. */
+  project?: string;
+  runnerFile?: string;
   /**
    * The title could not be read statically -- a template with an
    * interpolation, or a `.each` row. Such a test can never be named in a
-   * `-t` pattern, so it is always selected and it forces the whole run down
-   * to file-level filtering.
+   * `-t` pattern, so it is always selected and may force file-level filtering.
+   * Playwright runner discovery resolves generated titles before scoring.
    */
   dynamic: boolean;
 }
@@ -98,5 +101,6 @@ export interface Selection {
  * confused with one another.
  */
 export function testId(t: TestCase): string {
-  return `${t.file}\u001f${t.titlePath.join("\u001f")}\u001f${t.line}`;
+  const base = `${t.file}\u001f${t.titlePath.join("\u001f")}\u001f${t.line}`;
+  return t.project === undefined ? base : `${base}\u001f${t.project}`;
 }

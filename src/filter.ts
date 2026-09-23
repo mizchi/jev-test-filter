@@ -9,11 +9,11 @@
  *   - node:test ORs repeated `--test-name-pattern` flags, and a pattern that
  *     matches a SUITE name runs every test under it. One flag, one
  *     alternation of anchored full names, is the only safe shape.
- *   - Playwright's `--grep` matches `"<project> <file> <chain> <title>"`, so an
- *     anchored pattern would have to know the project name and would break
- *     when a project is added. `file:line` is exact and needs no escaping.
+ *   - Playwright's own --list supplies project-aware names for --test-list.
+ *     Source-only discovery retains file:line as its conservative fallback.
  */
 import type { Framework, Selection, TestCase } from "./types.ts";
+import { createHash } from "node:crypto";
 
 export type FilterMode =
   /** Everything was selected: pass no arguments and let the runner run. */
@@ -26,6 +26,8 @@ export type FilterMode =
   | "pattern"
   /** `file:line` positionals. */
   | "locations"
+  /** Playwright's own exact test list, including project and generated title. */
+  | "test-list"
   /** Exact names, for a runner that does not take a pattern. */
   | "exact";
 
@@ -33,6 +35,8 @@ export interface FilterArgs {
   mode: FilterMode;
   /** Arguments to append to the runner command, in order. */
   argv: string[];
+  /** Lines to write to argv's --test-list file before invoking Playwright. */
+  testList?: string[];
 }
 
 export interface FilterOptions {
@@ -48,17 +52,17 @@ export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** The full name as this test's own runner spells it. */
+/** The full name as this runner's name pattern matches it. */
 export function fullName(t: TestCase): string {
   if (t.framework === "rust") return t.titlePath.join("::");
   if (t.framework === "go") return t.titlePath.join("/");
-  const sep = t.framework === "node" ? " " : " > ";
+  const sep = t.framework === "node" || t.framework === "bun" ? " " : " > ";
   return t.titlePath.join(sep);
 }
 
 /** The flag that carries a name pattern, per framework. */
 function patternFlag(framework: Framework): string | null {
-  if (framework === "node") return "--test-name-pattern";
+  if (framework === "node" || framework === "bun") return "--test-name-pattern";
   if (framework === "vitest" || framework === "jest") return "-t";
   return null;
 }
@@ -87,6 +91,18 @@ export function buildFilter(sel: Selection, framework: Framework, { fileThreshol
   if (selected.length === all.length) return { mode: "all", argv: [] };
 
   if (framework === "playwright") {
+    if (selected.every((t) => t.runnerFile !== undefined)) {
+      if (selected.some((t) => t.runnerFile!.includes(" > "))) {
+        return { mode: "files", argv: [...new Set(selected.map((t) => t.file))] };
+      }
+      const lines = [...new Set(selected.map((t) => {
+        const prefix = t.project && !t.project.includes("] > ") ? `[${t.project}] > ` : "";
+        const titles = t.titlePath.some((name) => name.includes(" > ")) ? [] : t.titlePath;
+        return `${prefix}${t.runnerFile}${titles.map((name) => ` > ${name}`).join("")}`;
+      }))];
+      const hash = createHash("sha256").update(lines.join("\n")).digest("hex").slice(0, 12);
+      return { mode: "test-list", argv: ["--test-list", `.jev-test-filter/playwright-${hash}.txt`], testList: lines };
+    }
     return { mode: "locations", argv: selected.map((t) => `${t.file}:${t.line}`) };
   }
 

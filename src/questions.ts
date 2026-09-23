@@ -59,6 +59,7 @@ export function buildQuestion(t: TestCase, id: string): ScoreQuestion {
       task: TASK,
       subject: id,
       test_file: t.file,
+      ...(t.project === undefined ? {} : { playwright_project: t.project }),
       test_name: displayName(t),
       test_lines: t.line === t.endLine ? `${t.line}` : `${t.line}-${t.endLine}`,
     },

@@ -3,8 +3,8 @@
 `jev-test-filter` reads a `git diff`, asks a model how much that change can
 alter the outcome of every single test in the repository, and prints the filter
 arguments your test runner already understands. It hands those arguments to the
-runner you already use — vitest, jest, `node --test`, Playwright, `cargo test`
-or `go test` — so the run covers the tests the change could plausibly break
+runner you already use — vitest, jest, `node --test`, `bun test`, Playwright,
+`cargo test` or `go test` — so the run covers the tests the change could plausibly break
 instead of all of them.
 
 It uses [Jev](https://typesafe.ai), TypeSafe's System One model: one shared
@@ -77,7 +77,32 @@ tool's exit code.
 ```
 $ jev-test-filter --base main --exec -- vitest run
 $ jev-test-filter --base main --format node --exec -- node --test
+$ jev-test-filter --base main --format bun --exec -- bun test
+$ jev-test-filter --base main --format playwright --exec -- npx playwright test
 ```
+
+For a text snapshot update, inspect the changed expectations separately:
+
+```bash
+vitest run --update
+jev-test-filter --verify-snapshots --json
+```
+
+`--verify-snapshots` reviews changed `.snap` files and inline snapshot edits,
+including multiline values. It reads the working-tree diff by default,
+does not edit snapshots, and does not run tests. Each changed file receives a
+`plausible`, `review`, or `unknown` decision with Jev's score and confidence.
+`review` includes low-confidence answers; a missing answer or failed request is
+`unknown`. Jev returns structured decisions, not written explanations, so the
+report does not claim to explain its reasoning. Image snapshots are ignored.
+This mode is advisory: it does not fail CI on a suspicious update.
+The associated test source is included when it fits the input budget; a
+missing or oversized test source yields `unknown` rather than an approval.
+Each `.snap` file is one question, so a suspicious entry marks the whole file
+for review. A score below 1 with confidence at least 0.6 is `plausible`;
+all other usable answers are `review`. A truncated diff is `unknown` because
+the missing context could change the judgment. `--base <ref>` reviews committed
+changes from that ref; the default reviews uncommitted working-tree changes.
 
 Real output, on this repository:
 
@@ -210,9 +235,11 @@ neither is ambiguous: `--exec` simply does not start the command and prints
 
 Prefer `--exec`. It exists so that nobody has to get this right.
 
-Tests are discovered with `git ls-files`, so untracked and ignored files are
-never considered. A file counts as a test file when it is named
-`*.test.*` or `*.spec.*` with a `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`,
+Source-based discovery uses `git ls-files`, so untracked and ignored files are
+not considered in that mode. Playwright with `--format playwright --exec` uses
+Playwright's own collected list instead. For source discovery, a file counts
+as a test file when it is named
+`*.test.*`, `*.vitest.*` or `*.spec.*` with a `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`,
 `.mts` or `.cts` extension, or when it ends in `_test.go`, which is Go's own
 convention and the only one `go test` compiles into a test binary.
 
@@ -306,9 +333,13 @@ before you hand-edit anything it prints.
 | `vitest` | `" > "` — `Cart > totals` | `-t '^(?:a > b\|c)$'` plus the files | pattern **before** the files |
 | `jest` | `" > "` | `-t '^(?:...)$'` plus the files | pattern **before** the files |
 | `node` | a single space — `Cart totals` | one `--test-name-pattern '^(?:a b\|c)$'` plus the files | pattern **before** the files |
-| `playwright` | not used | `file:line` positionals — `e2e/cart.spec.ts:12` | positionals only |
+| `bun` | a single space — `Cart totals` | one `--test-name-pattern '^(?:a b\|c)$'` plus the files | pattern **before** the files |
+| `playwright` | runner's test title and project | `--test-list .jev-test-filter/playwright-….txt` with `--exec`; otherwise `file:line` | exact list or positionals |
 | `rust` | `"::"` — `cart::tests::halves_the_total` | `-- --exact <name> <name>…`, one invocation | after a literal `--` |
 | `go` | `"/"` — `TestApplyDiscount/halves the total` | `-run '^(?:TestA\|TestB)$'` plus the `./pkg` directories | pattern **before** the packages |
+
+Bun 1.3.5 prints `Cart > totals` in its reporter, but `--test-name-pattern`
+matches `Cart totals`. The pattern above was verified by running Bun itself.
 
 Three things in that table were measured, not assumed:
 
@@ -322,11 +353,14 @@ Three things in that table were measured, not assumed:
   alternation. Repeated flags are OR'd, and a pattern that matches a *suite*
   name runs every test under it, so one anchored alternation of full names is
   the only shape that selects exactly the intended tests.
-- **Playwright is selected by `file:line`, not by `--grep`.** Playwright's
-  `--grep` matches `"<project> <file> <chain> <title>"` — the project name is
-  part of the string, so an anchored pattern would have to know it and would
-  break the moment a project is added. `npx playwright test a.spec.ts:4`
-  selects exactly one test and several positionals may be listed.
+- **Playwright uses its own collected test list with `--exec`.** The tool runs
+  the given Playwright command once with `--list --reporter=json`, then scores
+  each collected test, including generated rows and project variants. It writes
+  the chosen names to `.jev-test-filter/playwright-….txt` and passes it through
+  `--test-list`. This collects tests without running browsers. Without `--exec`
+  it keeps the source-based `file:line` filter, which can run several generated
+  rows declared on one line. The tool does not use `--grep`;
+  its matching string includes the project name and file path.
 
 A fourth fact, if you are ever tempted to build a pattern yourself from
 `--json`: an empty name pattern is not neutral. `vitest -t ""` runs everything,
@@ -360,15 +394,16 @@ cargo 1.98.0 and go 1.26.2:
   all. `--json` still reports the per-subtest score, which is the finer signal
   and what a reader wants to see.
 
-The vitest, node:test, Playwright, Rust and Go spellings were each verified
+The vitest, node:test, Bun, Playwright, Rust and Go spellings were each verified
 against the real runner. `jest` is emitted with the vitest shape and was not.
 
-The `mode` field in `--json` names which of five shapes came out:
+The `mode` field in `--json` names the emitted filter shape:
 
 | `mode` | `argv` | Meaning |
 | --- | --- | --- |
 | `pattern` | flag, pattern, files | The normal case. |
 | `locations` | `file:line`… | Playwright. |
+| `test-list` | `--test-list <file>` | Playwright with runner discovery; `test_list` in JSON holds the file's lines. |
 | `exact` | `--`, `--exact`, names… | Rust. Every name came from `cargo test -- --list`. |
 | `files` | files | A name pattern could not express the selection, so whole files were chosen. This happens when a selected test has a non-literal title, or when more than 80% of the suite was selected and the alternation would not be worth it. |
 | `all` | *(empty)* | Run everything. Either every test was selected, or a fail-safe fired. |
@@ -451,11 +486,12 @@ framework with no `--format`, which exits 1 (see Known limitations).
 ```
 --base <ref>        compare against <ref>...HEAD, as a pull request does
 --staged            use the staged change instead of the working tree
---format <name>     vitest | jest | node | playwright | rust | go | auto  (default: auto)
+--format <name>     vitest | jest | node | bun | playwright | rust | go | auto  (default: auto)
 --cutoff <n>        select at or above this score level (default: 2)
 --concurrency <n>   requests in flight at once (default: 32)
 --json              print the full scoring instead of the arguments
 --dry-run           extract and report without calling Jev
+--verify-snapshots  review changed text snapshots without modifying files
 --replay <file>     re-gate a recorded run offline (default: .jev-test-filter/last.json)
 --exec -- <cmd...>  append the arguments to <cmd...> and run it
 -h, --help          the help text

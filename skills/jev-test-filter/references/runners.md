@@ -50,10 +50,16 @@ why every one of them is pinned by a test that spawns a real runner.
   With an unnamed project the string begins with a space. An anchored pattern
   therefore has to know the project name, and breaks the moment a project is
   added to the config.
-- `file:line` positionals are exact, need no escaping, and several may be
-  listed: `npx playwright test a.spec.ts:4 b.spec.ts:9`.
+- `file:line` positionals need no escaping, and several may be listed:
+  `npx playwright test a.spec.ts:4 b.spec.ts:9`. Generated rows declared on
+  the same line cannot be separated by location.
 - The line ast-grep reports for the `test(...)` call is the line Playwright
   reports. They agree.
+- Playwright 1.58.2 supports `--list --reporter=json` and `--test-list <file>`.
+  A list entry such as `[chromium] > rows.spec.cjs > Cart > row alpha` selects
+  one project and one generated row, even when all rows were declared on the
+  same source line. Without the project prefix the same row runs in both
+  projects. The file path is relative to Playwright's `rootDir`.
 
 ## cargo test
 
