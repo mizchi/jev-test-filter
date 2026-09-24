@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { gate, DEFAULT_CUTOFF } from "../src/gate.ts";
+import { gate, gateOptions, resolveGate, DEFAULT_CUTOFF } from "../src/gate.ts";
 import { testId } from "../src/types.ts";
 import type { Answer, TestCase } from "../src/types.ts";
 
@@ -68,4 +68,14 @@ test("selected mirrors the verdicts and fallback starts null", () => {
   assert.deepEqual(sel.selected.map((t) => t.titlePath[0]), ["a"]);
   assert.equal(sel.all.length, 2);
   assert.equal(sel.fallback, null);
+});
+
+test("resolveGate fills what was not given with the defaults", () => {
+  assert.deepEqual(resolveGate({}), { cutoff: 2, unsure_below: 0.5, unsure_margin: 1 });
+  assert.deepEqual(resolveGate({ unsureMargin: 0 }), { cutoff: 2, unsure_below: 0.5, unsure_margin: 0 });
+});
+
+test("gateOptions reads a recorded gate back, and nothing from no gate", () => {
+  assert.deepEqual(gateOptions({ cutoff: 1, unsure_below: 0.2, unsure_margin: 0.5 }), { cutoff: 1, unsureBelow: 0.2, unsureMargin: 0.5 });
+  assert.deepEqual(gateOptions(null), {});
 });

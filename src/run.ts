@@ -9,14 +9,14 @@
  */
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { loadDiff, touchesChange } from "./diff.ts";
+import { loadDiff, resolveSha, touchesChange } from "./diff.ts";
 import type { ChangedRanges } from "./diff.ts";
 import { discoverTests } from "./discover.ts";
 import { buildState } from "./state.ts";
 import type { StatePayload } from "./state.ts";
 import { buildQuestion, questionId, readAnswer } from "./questions.ts";
 import type { ScoreQuestion } from "./questions.ts";
-import { gate } from "./gate.ts";
+import { gate, gateOptions, resolveGate } from "./gate.ts";
 import type { GateOptions } from "./gate.ts";
 import { buildFilter } from "./filter.ts";
 import { listPlaywrightTests } from "./playwright.ts";
@@ -24,23 +24,22 @@ import type { FilterArgs } from "./filter.ts";
 import { Jev, mapLimit, DEFAULT_CONCURRENCY } from "./jev.ts";
 import type { AskClient, Spend } from "./jev.ts";
 import { testId } from "./types.ts";
-import type { Answer, Framework, Selection, TestCase } from "./types.ts";
+import type { Answer, Framework, RunRecord, RunRecordV1, RunRecordV2, Selection, TestCase } from "./types.ts";
+
+export type { RecordGate, RunRecord, RunRecordV1, RunRecordV2 } from "./types.ts";
 
 /** Where a run's answers are kept, for `--replay`. */
 export const RECORD_DIR = ".jev-test-filter";
 export const RECORD_FILE = "last.json";
-
-export interface RunRecord {
-  version: 1;
-  createdAt: string;
-  base: string | null;
-  framework: Framework;
-  tests: TestCase[];
-  /** `testId` of every test the diff touched. */
-  touched: string[];
-  answers: Record<string, Answer | null>;
-  fallback: string | null;
-}
+/**
+ * One record per commit, under `RECORD_DIR`, named `<head_sha>.json`.
+ *
+ * `last.json` alone is overwritten by the next run, and the run a CI result
+ * has to be compared with is rarely the last one on this machine. Keyed by
+ * the head rather than by time because the head is what the other side of
+ * that comparison knows.
+ */
+export const RECORDS_SUBDIR = "records";
 
 /**
  * The framework the run is for.
@@ -138,6 +137,17 @@ export interface RunResult {
   spent: Spend | null;
 }
 
+/** What labels a record: which change was judged, and under which gate. */
+async function stamp(cwd: string, opts: RunOptions): Promise<Pick<RunRecordV2, "head_sha" | "base_sha" | "context_digest" | "gate">> {
+  const base = opts.base ?? null;
+  return {
+    head_sha: await resolveSha("HEAD", cwd),
+    base_sha: base === null ? null : await resolveSha(base, cwd),
+    context_digest: null,
+    gate: resolveGate(opts),
+  };
+}
+
 /**
  * A selection is an optimization and never a correctness gate, so every
  * failure below takes the same exit: run everything, and say why on the
@@ -172,13 +182,15 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   }
 
   if (all.length === 0) {
-    const record: RunRecord = {
-      version: 1,
+    const record: RunRecordV2 = {
+      version: 2,
       createdAt: new Date().toISOString(),
       base: opts.base ?? null,
+      ...(await stamp(cwd, opts)),
       framework: opts.format ?? "unknown",
       tests: [],
       touched: [],
+      quarantined: [],
       answers: {},
       fallback: discoveryFailure ?? "no tests were extracted",
     };
@@ -219,13 +231,15 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
     selection = everything(all, "the diff did not fit the state budget and the selection was small");
   }
 
-  const record: RunRecord = {
-    version: 1,
+  const record: RunRecordV2 = {
+    version: 2,
     createdAt: new Date().toISOString(),
     base: opts.base ?? null,
+    ...(await stamp(cwd, opts)),
     framework,
     tests: all,
     touched: [...touched],
+    quarantined: [],
     answers: Object.fromEntries(answers),
     fallback: selection.fallback,
   };
@@ -238,23 +252,65 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   return { selection, framework, filter, record, spent };
 }
 
-/** Re-gate a recorded run at today's cutoffs, offline. */
+/**
+ * Re-gate a recorded run, offline.
+ *
+ * Under the record's own gate by default, so a bare replay reproduces the
+ * selection the run made; a value in `opts` replaces the recorded one, which
+ * is what trying another cutoff is. A v1 record kept no gate, and replays
+ * under the defaults as it always did.
+ */
 export function replay(record: RunRecord, opts: GateOptions = {}): Selection {
   if (record.fallback !== null) return everything(record.tests, record.fallback);
   const answers = new Map(Object.entries(record.answers));
-  return gate(record.tests, answers, new Set(record.touched), opts);
+  return gate(record.tests, answers, new Set(record.touched), { ...gateOptions(record.gate), ...opts });
 }
 
-export async function saveRecord(cwd: string, record: RunRecord): Promise<string> {
+/**
+ * Write the record to `last.json`, and to `records/<head_sha>.json` when the
+ * head is known. Returns every path written, `last.json` first.
+ *
+ * Whether a record should be written at all -- a fallback should not -- is
+ * the caller's decision, see `shouldSaveRecord`.
+ */
+export async function saveRecord(cwd: string, record: RunRecord): Promise<string[]> {
   const dir = join(cwd, RECORD_DIR);
   await mkdir(dir, { recursive: true });
-  const path = join(dir, RECORD_FILE);
-  await writeFile(path, `${JSON.stringify(record, null, 2)}\n`, "utf8");
-  return path;
+  const text = `${JSON.stringify(record, null, 2)}\n`;
+  const paths = [join(dir, RECORD_FILE)];
+  if (record.head_sha !== null) {
+    await mkdir(join(dir, RECORDS_SUBDIR), { recursive: true });
+    paths.push(join(dir, RECORDS_SUBDIR, `${record.head_sha}.json`));
+  }
+  for (const path of paths) await writeFile(path, text, "utf8");
+  return paths;
 }
 
+/**
+ * Read a record of either version. A v1 record comes back with every field
+ * it did not have as null, and nothing quarantined; its `version` stays 1,
+ * so a reader can still tell it kept no gate.
+ */
+type RunRecordV1Fields = Omit<RunRecordV1, "version">;
+
 export async function loadRecord(path: string): Promise<RunRecord> {
-  const parsed = JSON.parse(await readFile(path, "utf8")) as RunRecord;
-  if (parsed.version !== 1) throw new Error(`unsupported record version ${String(parsed.version)}`);
-  return parsed;
+  const parsed = JSON.parse(await readFile(path, "utf8")) as { version?: unknown };
+  if (parsed.version === 2) {
+    // Written by this version, or by hand; a missing label reads as unknown.
+    const v2 = parsed as Partial<RunRecordV2> & RunRecordV1Fields;
+    return {
+      ...v2,
+      version: 2,
+      head_sha: v2.head_sha ?? null,
+      base_sha: v2.base_sha ?? null,
+      context_digest: v2.context_digest ?? null,
+      gate: v2.gate ?? resolveGate(),
+      quarantined: v2.quarantined ?? [],
+    };
+  }
+  if (parsed.version === 1) {
+    const v1 = parsed as RunRecordV1;
+    return { ...v1, head_sha: null, base_sha: null, context_digest: null, gate: null, quarantined: [] };
+  }
+  throw new Error(`unsupported record version ${String(parsed.version)}`);
 }

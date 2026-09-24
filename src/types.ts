@@ -104,3 +104,70 @@ export function testId(t: TestCase): string {
   const base = `${t.file}\u001f${t.titlePath.join("\u001f")}\u001f${t.line}`;
   return t.project === undefined ? base : `${base}\u001f${t.project}`;
 }
+
+/**
+ * The gate values a run was decided under, spelled the way `jev-context`
+ * spells them so a reader that joins the two never has to translate.
+ */
+export interface RecordGate {
+  cutoff: number;
+  unsure_below: number;
+  unsure_margin: number;
+}
+
+/** A record as 0.1 wrote it. Still read; never written. */
+export interface RunRecordV1 {
+  version: 1;
+  createdAt: string;
+  base: string | null;
+  framework: Framework;
+  tests: TestCase[];
+  /** `testId` of every test the diff touched. */
+  touched: string[];
+  /** Keyed by question id, which is the test's index in `tests`. */
+  answers: Record<string, Answer | null>;
+  fallback: string | null;
+}
+
+/**
+ * A record as this version writes it: everything a run learned, and enough
+ * about where it stood to join it against something else later.
+ *
+ * The new fields are what make a record comparable. `head_sha` and
+ * `base_sha` say which change was judged, which is how a CI run of the same
+ * commit finds it; `context_digest` says which hints the questions carried,
+ * because a hint changes the question and two runs under different hints are
+ * not the same measurement; `gate` says which values turned the answers into
+ * a selection, because "this test was not selected" means nothing without
+ * the cutoff it was under.
+ *
+ * snake_case for the new fields only: they are the ones another program is
+ * meant to read, and they match the context that fed them. The old fields
+ * keep their spelling so a v1 reader's code keeps working.
+ */
+export interface RunRecordV2 extends Omit<RunRecordV1, "version"> {
+  version: 2;
+  /** `git rev-parse HEAD` at the time of the run; null when there was none. */
+  head_sha: string | null;
+  /** The sha `--base` resolved to; null without `--base`. */
+  base_sha: string | null;
+  /** The `digest` of the `--context` the questions were built with; null without one. */
+  context_digest: string | null;
+  gate: RecordGate;
+  /**
+   * `testId` of every test the context quarantined. Kept, rather than
+   * dropping those tests from `tests`, because a test missing from the run
+   * would be run by a filter that selects "everything"; kept by `testId`
+   * like `touched`, because the record is a snapshot of one commit.
+   */
+  quarantined: string[];
+}
+
+/**
+ * Any record `loadRecord` accepts, in one shape: a v1 record reads with every
+ * field it did not have as null (and nothing quarantined), so the code that
+ * replays one never has to branch on the version.
+ */
+export type RunRecord =
+  | RunRecordV2
+  | (Omit<RunRecordV2, "version" | "gate"> & { version: 1; gate: null });

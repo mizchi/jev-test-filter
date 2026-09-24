@@ -177,3 +177,19 @@ export async function loadDiff({ cwd = process.cwd(), base = null, staged = fals
   const stat = await git(["diff", "--stat", ...common, ...range], cwd);
   return { text, stat, ranges: parseUnifiedDiff(text) };
 }
+
+/**
+ * The commit a ref names, or null when it names none -- no repository, no
+ * commit yet, or a ref that does not exist.
+ *
+ * Null rather than a throw: the sha only labels a record, and a run that
+ * could select tests must not fail because it could not label them.
+ */
+export async function resolveSha(ref: string, cwd = process.cwd()): Promise<string | null> {
+  try {
+    const out = (await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd)).trim();
+    return /^[0-9a-f]{40,64}$/.test(out) ? out : null;
+  } catch {
+    return null;
+  }
+}
