@@ -11,6 +11,13 @@
  * makes from the answer; writing it into the question would mean every
  * recalibration rewrote the question, and no run could be compared with an
  * earlier one.
+ *
+ * The one thing a question may carry beyond the test's own identity is
+ * history from flaker (`--context`): the files this test failed with before,
+ * as one plain sentence under `instructions.history`. It is evidence, not a
+ * rule -- no count, no rate -- and it is absent, key and all, for a test the
+ * context says nothing about, so such a test is asked exactly what it was
+ * asked before contexts existed.
  */
 import type { TestCase } from "./types.ts";
 
@@ -52,7 +59,21 @@ export function displayName(t: TestCase): string {
   return t.titlePath.join(sep);
 }
 
-export function buildQuestion(t: TestCase, id: string): ScoreQuestion {
+/**
+ * The one sentence a hint becomes.
+ *
+ * A fact about the past and nothing more: nothing a model could read as a
+ * bar to clear, which is why flaker's `missed` count stays out of it. Whether
+ * THIS change can break the test is still the model's judgment.
+ */
+export function historySentence(files: readonly string[]): string {
+  const named =
+    files.length <= 1 ? (files[0] ?? "") : `${files.slice(0, -1).join(", ")} or ${files[files.length - 1]}`;
+  return `This test previously failed when ${named} changed.`;
+}
+
+/** `failedWith`: the files this test failed with before, from `--context`. */
+export function buildQuestion(t: TestCase, id: string, failedWith: readonly string[] = []): ScoreQuestion {
   return {
     type: "score",
     instructions: {
@@ -62,6 +83,7 @@ export function buildQuestion(t: TestCase, id: string): ScoreQuestion {
       ...(t.project === undefined ? {} : { playwright_project: t.project }),
       test_name: displayName(t),
       test_lines: t.line === t.endLine ? `${t.line}` : `${t.line}-${t.endLine}`,
+      ...(failedWith.length === 0 ? {} : { history: historySentence(failedWith) }),
     },
     criteria: SCORE_LEVELS,
   };

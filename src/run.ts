@@ -23,8 +23,10 @@ import { listPlaywrightTests } from "./playwright.ts";
 import type { FilterArgs } from "./filter.ts";
 import { Jev, mapLimit, DEFAULT_CONCURRENCY } from "./jev.ts";
 import type { AskClient, Spend } from "./jev.ts";
+import { lookup } from "./context.ts";
+import type { ContextLookup } from "./context.ts";
 import { testId } from "./types.ts";
-import type { Answer, Framework, RunRecord, RunRecordV1, RunRecordV2, Selection, TestCase } from "./types.ts";
+import type { Answer, Framework, JevContext, RunRecord, RunRecordV1, RunRecordV2, Selection, TestCase } from "./types.ts";
 
 export type { RecordGate, RunRecord, RunRecordV1, RunRecordV2 } from "./types.ts";
 
@@ -75,6 +77,12 @@ export interface ScoreOptions {
    * how much one `max_tokens_exceeded` split has to redo.
    */
   batchSize?: number;
+  /**
+   * What `--context` knows. A test it skips is not asked about -- its answer
+   * stays null and the gate reports it quarantined -- and a test it has
+   * history for is asked with that history.
+   */
+  context?: ContextLookup | null;
 }
 
 /**
@@ -87,20 +95,23 @@ export interface ScoreOptions {
 export async function score(
   tests: TestCase[],
   state: StatePayload,
-  { client = null, concurrency = DEFAULT_CONCURRENCY, batchSize = 400 }: ScoreOptions = {},
+  { client = null, concurrency = DEFAULT_CONCURRENCY, batchSize = 400, context = null }: ScoreOptions = {},
 ): Promise<Map<string, Answer | null>> {
   const jev = client ?? new Jev();
   const out = new Map<string, Answer | null>();
   tests.forEach((_, i) => out.set(questionId(i), null));
 
+  // Question ids stay the test's index in `tests` even with skipped tests
+  // left out, so a record's answers line up with its tests either way.
+  const asked: Array<[string, ScoreQuestion]> = [];
+  tests.forEach((t, i) => {
+    if (context?.skipped(t)) return;
+    const id = questionId(i);
+    asked.push([id, buildQuestion(t, id, context?.failedWith(t) ?? [])]);
+  });
   const batches: Array<Record<string, ScoreQuestion>> = [];
-  for (let i = 0; i < tests.length; i += batchSize) {
-    const batch: Record<string, ScoreQuestion> = {};
-    for (let j = i; j < Math.min(i + batchSize, tests.length); j += 1) {
-      const id = questionId(j);
-      batch[id] = buildQuestion(tests[j]!, id);
-    }
-    batches.push(batch);
+  for (let i = 0; i < asked.length; i += batchSize) {
+    batches.push(Object.fromEntries(asked.slice(i, i + batchSize)));
   }
 
   const responses = await mapLimit(batches, concurrency, (batch) => jev.askSplitting(state, batch));
@@ -127,6 +138,28 @@ export interface RunOptions extends GateOptions {
   dryRun?: boolean;
   /** When using Playwright, collect its actual test list with this runner command. */
   playwrightCommand?: string[];
+  /**
+   * flaker's `jev-context`, already validated. Its gate values are defaults:
+   * a value set in these options wins over each.
+   */
+  context?: JevContext | null;
+}
+
+/**
+ * The gate a run decides under: the options' own values over the context's,
+ * over the defaults. Only values actually present count, so an option passed
+ * as `undefined` does not erase the context's value.
+ */
+export function effectiveGate(opts: GateOptions, context: JevContext | null = null): GateOptions {
+  const out: GateOptions = {};
+  const g = context?.gate;
+  if (g?.cutoff !== undefined) out.cutoff = g.cutoff;
+  if (g?.unsure_below !== undefined) out.unsureBelow = g.unsure_below;
+  if (g?.unsure_margin !== undefined) out.unsureMargin = g.unsure_margin;
+  if (opts.cutoff !== undefined) out.cutoff = opts.cutoff;
+  if (opts.unsureBelow !== undefined) out.unsureBelow = opts.unsureBelow;
+  if (opts.unsureMargin !== undefined) out.unsureMargin = opts.unsureMargin;
+  return out;
 }
 
 export interface RunResult {
@@ -143,8 +176,8 @@ async function stamp(cwd: string, opts: RunOptions): Promise<Pick<RunRecordV2, "
   return {
     head_sha: await resolveSha("HEAD", cwd),
     base_sha: base === null ? null : await resolveSha(base, cwd),
-    context_digest: null,
-    gate: resolveGate(opts),
+    context_digest: opts.context?.digest ?? null,
+    gate: resolveGate(effectiveGate(opts, opts.context ?? null)),
   };
 }
 
@@ -200,6 +233,9 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
 
   const framework = opts.format ?? pickFramework(all);
   const touched = collect(all, diff.ranges);
+  const context = opts.context ? lookup(opts.context) : null;
+  const quarantined = new Set(context ? all.filter((t) => context.skipped(t)).map(testId) : []);
+  const gateOpts = effectiveGate(opts, opts.context ?? null);
   const state = buildState(diff.text, diff.stat);
 
   let answers = new Map<string, Answer | null>();
@@ -215,6 +251,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
         client,
         ...(opts.concurrency === undefined ? {} : { concurrency: opts.concurrency }),
         ...(opts.batchSize === undefined ? {} : { batchSize: opts.batchSize }),
+        context,
       });
       spent = client.spent;
     } catch (err: unknown) {
@@ -222,12 +259,14 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
     }
     // Gating is pure and offline, so it stays outside the try: a bug in the
     // gate must not be reported to the user as a network failure.
-    selection = failure === null ? gate(all, answers, touched, opts) : everything(all, failure);
+    selection = failure === null ? gate(all, answers, touched, gateOpts, quarantined) : everything(all, failure);
   }
 
   // A truncated diff that still deselects most of the suite is a selection
   // made from a state that was missing the change it should have judged.
-  if (selection.fallback === null && state.truncated && selection.selected.length / all.length < 0.5) {
+  // Quarantined tests were never candidates, so they count on neither side.
+  const candidates = all.length - quarantined.size;
+  if (selection.fallback === null && state.truncated && candidates > 0 && selection.selected.length / candidates < 0.5) {
     selection = everything(all, "the diff did not fit the state budget and the selection was small");
   }
 
@@ -239,7 +278,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
     framework,
     tests: all,
     touched: [...touched],
-    quarantined: [],
+    quarantined: [...quarantined],
     answers: Object.fromEntries(answers),
     fallback: selection.fallback,
   };
@@ -263,7 +302,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
 export function replay(record: RunRecord, opts: GateOptions = {}): Selection {
   if (record.fallback !== null) return everything(record.tests, record.fallback);
   const answers = new Map(Object.entries(record.answers));
-  return gate(record.tests, answers, new Set(record.touched), { ...gateOptions(record.gate), ...opts });
+  return gate(record.tests, answers, new Set(record.touched), { ...gateOptions(record.gate), ...effectiveGate(opts) }, new Set(record.quarantined));
 }
 
 /**

@@ -80,16 +80,21 @@ export function decide(
  *
  * `answers` is keyed by question id, which is the test's index in `tests`;
  * `touched` is keyed by `testId`, because it is computed from the diff before
- * any question exists.
+ * any question exists; so is `quarantined`, the tests a context put in
+ * `skip`. A quarantined test is decided before anything else, touched
+ * included: it was never asked about, and the quarantine is flaker's decision
+ * that its result means nothing right now.
  */
 export function gate(
   tests: TestCase[],
   answers: Map<string, Answer | null>,
   touched: Set<string>,
   opts: GateOptions = {},
+  quarantined: ReadonlySet<string> = new Set(),
 ): Selection {
-  const verdicts = tests.map((t, i) => {
+  const verdicts = tests.map((t, i): Verdict => {
     const id = questionId(i);
+    if (quarantined.has(testId(t))) return { id, test: t, answer: null, reason: "quarantined", selected: false };
     return decide(id, t, answers.get(id) ?? null, touched.has(testId(t)), opts);
   });
   return {

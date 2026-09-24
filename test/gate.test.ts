@@ -79,3 +79,19 @@ test("gateOptions reads a recorded gate back, and nothing from no gate", () => {
   assert.deepEqual(gateOptions({ cutoff: 1, unsure_below: 0.2, unsure_margin: 0.5 }), { cutoff: 1, unsureBelow: 0.2, unsureMargin: 0.5 });
   assert.deepEqual(gateOptions(null), {});
 });
+
+test("a quarantined test is not selected, whatever else is true of it", () => {
+  const q = mk("flaky");
+  const edited = mk("flaky and edited", { line: 5 });
+  const tests = [q, edited, mk("kept", { line: 9 })];
+  const sel = gate(
+    tests,
+    answers(null, { value: 3, confidence: 0.9 }, { value: 3, confidence: 0.9 }),
+    new Set([testId(edited)]),
+    {},
+    new Set([testId(q), testId(edited)]),
+  );
+  assert.deepEqual(sel.verdicts.map((v) => v.reason), ["quarantined", "quarantined", "scored"]);
+  assert.deepEqual(sel.verdicts.map((v) => v.selected), [false, false, true]);
+  assert.deepEqual(sel.selected.map((t) => t.titlePath[0]), ["kept"]);
+});

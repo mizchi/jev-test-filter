@@ -69,7 +69,13 @@ export type Reason =
   /** No usable answer came back. Selected to be safe. */
   | "missing"
   /** The score was under the cutoff. Not selected. */
-  | "below";
+  | "below"
+  /**
+   * The context from flaker put the test in `skip`. Not asked about and not
+   * selected, whatever the diff did to it: a quarantined test fails for
+   * reasons of its own, and running it would only say so again.
+   */
+  | "quarantined";
 
 export interface Verdict {
   /** The question this test was asked under, e.g. `q0007`. */
@@ -171,3 +177,52 @@ export interface RunRecordV2 extends Omit<RunRecordV1, "version"> {
 export type RunRecord =
   | RunRecordV2
   | (Omit<RunRecordV2, "version" | "gate"> & { version: 1; gate: null });
+
+/**
+ * What flaker knows about the tests, as its `jev-context` projection emits
+ * it (`flaker export --projection jev-context`). Version 1.
+ *
+ * A test is named by `file` + `title_path` (+ `project` for Playwright) and
+ * never by `testId`: the line in a `testId` moves with every edit above the
+ * test, and flaker's history is about the test, not about where it sat.
+ */
+export interface JevContext {
+  version: 1;
+  /**
+   * sha256 of `skip` and `tests`, computed by flaker. Kept verbatim on the
+   * record: a hint changes a question, so runs are only comparable when their
+   * digests are equal.
+   */
+  digest: string;
+  generated_at?: string;
+  /** Defaults for the gate. A flag on the command line wins over each. */
+  gate: ContextGate | null;
+  skip: ContextSkip[];
+  tests: ContextTest[];
+}
+
+export interface ContextGate {
+  cutoff?: number;
+  unsure_below?: number;
+  unsure_margin?: number;
+  /** What the values were calibrated from. Carried, never read. */
+  basis?: unknown;
+}
+
+export interface ContextSkip {
+  file: string;
+  title_path: string[];
+  /** Absent: the test in every project. */
+  project?: string;
+  reason?: string;
+}
+
+export interface ContextTest {
+  file: string;
+  title_path: string[];
+  project?: string;
+  /** Changed files this test failed with before, most telling first. */
+  failed_with: string[];
+  /** How often a selector left it out when it then failed. Carried, never asked. */
+  missed?: number;
+}
