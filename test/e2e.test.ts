@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extractTests } from "../src/extract.ts";
 import { detectFramework } from "../src/framework.ts";
@@ -100,13 +101,22 @@ test("bun really runs only the test selected by the generated filter", { skip: s
   const f = buildFilter(sel(all, [all[0]!]), "bun");
   assert.equal(f.mode, "pattern");
 
-  const res = spawnSync("bun", ["test", ...f.argv], { cwd: join(HERE, ".."), encoding: "utf8" });
-  const output = `${res.stdout}${res.stderr}`;
-  assert.equal(res.status, 0, output);
-  assert.match(output, /1 pass/);
-  assert.match(output, /1 filtered out/);
-  assert.match(output, /Cart > totals/);
-  assert.doesNotMatch(output, /\(pass\) Cart > empties/);
+  // Bun 1.3 no longer prints passing test names on the console, so read which
+  // test ran from the JUnit report: a filtered-out test carries <skipped />.
+  const dir = await mkdtemp(join(tmpdir(), "jev-bun-junit-"));
+  try {
+    const report = join(dir, "report.xml");
+    const res = spawnSync("bun", ["test", "--reporter=junit", `--reporter-outfile=${report}`, ...f.argv], { cwd: join(HERE, ".."), encoding: "utf8" });
+    const output = `${res.stdout}${res.stderr}`;
+    assert.equal(res.status, 0, output);
+    assert.match(output, /1 pass/);
+    assert.match(output, /1 filtered out/);
+    const xml = await readFile(report, "utf8");
+    assert.match(xml, /<testcase name="totals" classname="Cart"[^>]*\/>/);
+    assert.match(xml, /<testcase name="empties" classname="Cart"[^>]*>\s*<skipped \/>/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("playwright is selected by location and every line points at a real test", async () => {
