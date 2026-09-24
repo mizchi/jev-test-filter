@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { parseCliArgs, renderLine, renderJson, renderSnapshotReport, execArgv, materializeFilter, shouldSaveRecord, stdoutExitCode, DEFAULT_RECORD_PATH } from "../src/cli.ts";
+import { parseCliArgs, renderLine, renderJson, renderSnapshotReport, execArgv, materializeFilter, shouldSaveRecord, stdoutExitCode, gateFlags, DEFAULT_RECORD_PATH } from "../src/cli.ts";
 import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -142,4 +142,30 @@ test("a bare --replay means the record the last run left", () => {
 test("--replay still takes an explicit path either way round", () => {
   assert.equal(parseCliArgs(["--replay", "old.json"]).replayPath, "old.json");
   assert.equal(parseCliArgs(["--replay=old.json"]).replayPath, "old.json");
+});
+
+test("parseCliArgs reads the unsure parameters", () => {
+  const a = parseCliArgs(["--unsure-below", "0.3", "--unsure-margin", "0.5"]);
+  assert.equal(a.unsureBelow, 0.3);
+  assert.equal(a.unsureMargin, 0.5);
+  const none = parseCliArgs([]);
+  assert.equal(none.unsureBelow, undefined);
+  assert.equal(none.unsureMargin, undefined);
+});
+
+test("parseCliArgs rejects a gate value that is not a number", () => {
+  // `Number("abc")` is NaN, and a NaN cutoff compares false against every
+  // score: it would silently deselect the whole suite.
+  assert.throws(() => parseCliArgs(["--cutoff", "abc"]), /--cutoff/);
+  assert.throws(() => parseCliArgs(["--unsure-below", "x"]), /--unsure-below/);
+  assert.throws(() => parseCliArgs(["--unsure-margin", ""]), /--unsure-margin/);
+});
+
+test("gateFlags carries only the gate values the command line set", () => {
+  assert.deepEqual(gateFlags(parseCliArgs([])), {});
+  assert.deepEqual(gateFlags(parseCliArgs(["--unsure-margin", "0"])), { unsureMargin: 0 });
+  assert.deepEqual(
+    gateFlags(parseCliArgs(["--cutoff", "1", "--unsure-below", "0.2", "--unsure-margin", "0.5"])),
+    { cutoff: 1, unsureBelow: 0.2, unsureMargin: 0.5 },
+  );
 });
