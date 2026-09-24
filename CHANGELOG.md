@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.1.1 (unreleased)
+## 0.1.2
+
+### Fixed
+
+- Start the CLI through the `jev-test-filter` npm bin symlink, and finish writing output before exiting.
+
+## 0.1.1
 
 ### Added
 
