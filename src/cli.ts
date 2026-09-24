@@ -21,8 +21,10 @@
  * Only this file writes to a stream or exits.
  */
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { displayName } from "./questions.ts";
 import { fullName } from "./filter.ts";
@@ -353,13 +355,23 @@ async function main(): Promise<number> {
   return stdoutExitCode(res);
 }
 
+/** Resolve npm's bin symlink before deciding whether this module is the entrypoint. */
+function isCliInvocation(argv1: string | undefined, moduleUrl: string): boolean {
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
 // Only run when invoked as a program, so the tests can import the renderers.
-if (process.argv[1] && /cli\.(ts|js)$/.test(process.argv[1])) {
+if (isCliInvocation(process.argv[1], import.meta.url)) {
   main().then(
-    (code) => process.exit(code),
+    (code) => { process.exitCode = code; },
     (err: unknown) => {
       process.stderr.write(`jev-test-filter: ${err instanceof Error ? err.message : String(err)}\n`);
-      process.exit(1);
+      process.exitCode = 1;
     },
   );
 }

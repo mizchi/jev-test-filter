@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { parseCliArgs, renderLine, renderJson, renderSnapshotReport, execArgv, materializeFilter, shouldSaveRecord, stdoutExitCode, DEFAULT_RECORD_PATH } from "../src/cli.ts";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { RunResult } from "../src/run.ts";
 import type { TestCase } from "../src/types.ts";
 
@@ -39,6 +41,21 @@ test("parseCliArgs splits the command after --exec", () => {
   const a = parseCliArgs(["--base", "main", "--exec", "--", "vitest", "run"]);
   assert.deepEqual(a.exec, ["vitest", "run"]);
   assert.deepEqual(a.paths, []);
+});
+
+test("npm の bin symlink 経由でも CLI 本体として起動する", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "jev-cli-bin-"));
+  try {
+    const source = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+    const bin = join(cwd, "jev-test-filter");
+    await symlink(source, bin);
+    const res = spawnSync(process.execPath, [bin, "--help"], { cwd, encoding: "utf8" });
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /jev-test-filter/);
+    assert.match(res.stdout, /--exec/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test("parseCliArgs rejects an unknown format", () => {
