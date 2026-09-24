@@ -31,9 +31,11 @@ import { fullName } from "./filter.ts";
 import { loadDiff } from "./diff.ts";
 import { assessSnapshots, findSnapshotChangesInWorktree, loadSnapshotTestSources, snapshotTestFile } from "./snapshot.ts";
 import type { SnapshotReview } from "./snapshot.ts";
+import { loadContext } from "./context.ts";
 import { loadRecord, RECORD_DIR, RECORD_FILE, replay, run, saveRecord } from "./run.ts";
 import type { RunRecord, RunResult } from "./run.ts";
-import type { Framework } from "./types.ts";
+import type { GateOptions } from "./gate.ts";
+import type { Framework, JevContext } from "./types.ts";
 
 const FORMATS: readonly string[] = ["vitest", "jest", "node", "bun", "playwright", "rust", "go", "auto"];
 
@@ -46,13 +48,32 @@ export interface CliArgs {
   paths: string[];
   format: Framework | null;
   cutoff: number | undefined;
+  unsureBelow: number | undefined;
+  unsureMargin: number | undefined;
   concurrency: number | undefined;
   json: boolean;
   dryRun: boolean;
   verifySnapshots: boolean;
   replayPath: string | null;
+  contextPath: string | null;
   exec: string[] | null;
   help: boolean;
+}
+
+/**
+ * One gate value from the command line.
+ *
+ * `Number()` alone is not enough: `Number("abc")` is NaN, and NaN compares
+ * false against every score, so a typo in `--cutoff` would deselect the whole
+ * suite without a word. An empty string is refused for the same reason
+ * `Number("")` is 0.
+ */
+function gateNumber(flag: string, raw: string | boolean | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const text = String(raw).trim();
+  const n = Number(text);
+  if (text === "" || !Number.isFinite(n)) throw new Error(`${flag} needs a number, got ${JSON.stringify(String(raw))}`);
+  return n;
 }
 
 /**
@@ -87,11 +108,14 @@ export function parseCliArgs(argv: string[]): CliArgs {
       staged: { type: "boolean", default: false },
       format: { type: "string", default: "auto" },
       cutoff: { type: "string" },
+      "unsure-below": { type: "string" },
+      "unsure-margin": { type: "string" },
       concurrency: { type: "string" },
       json: { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       "verify-snapshots": { type: "boolean", default: false },
       replay: { type: "string" },
+      context: { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
   });
@@ -103,20 +127,48 @@ export function parseCliArgs(argv: string[]): CliArgs {
   if (values["verify-snapshots"] && (exec !== null || values.replay !== undefined)) {
     throw new Error("--verify-snapshots cannot be combined with --exec or --replay");
   }
+  // Refused rather than ignored: a replay re-gates answers already given to
+  // questions already asked, and a snapshot review asks no per-test question,
+  // so a context could change neither -- and silently doing nothing with a
+  // flag reads as the flag having worked.
+  if (values.context !== undefined && values.replay !== undefined) {
+    throw new Error("--context cannot be combined with --replay; the record already holds the answers its context produced");
+  }
+  if (values.context !== undefined && values["verify-snapshots"]) {
+    throw new Error("--context cannot be combined with --verify-snapshots");
+  }
 
   return {
     base: values.base === undefined ? null : String(values.base),
     staged: Boolean(values.staged),
     paths: positionals,
     format: format === "auto" ? null : (format as Framework),
-    cutoff: values.cutoff === undefined ? undefined : Number(values.cutoff),
+    cutoff: gateNumber("--cutoff", values.cutoff),
+    unsureBelow: gateNumber("--unsure-below", values["unsure-below"]),
+    unsureMargin: gateNumber("--unsure-margin", values["unsure-margin"]),
     concurrency: values.concurrency === undefined ? undefined : Number(values.concurrency),
     json: Boolean(values.json),
     dryRun: Boolean(values["dry-run"]),
     verifySnapshots: Boolean(values["verify-snapshots"]),
     replayPath: values.replay === undefined ? null : String(values.replay),
+    contextPath: values.context === undefined ? null : String(values.context),
     exec,
     help: Boolean(values.help),
+  };
+}
+
+/**
+ * The gate values the command line set, and nothing else.
+ *
+ * Absent rather than defaulted, because a flag is only one of the places a
+ * gate value comes from: whatever it leaves unset falls through to the
+ * record being replayed, then to the gate's own defaults.
+ */
+export function gateFlags(args: CliArgs): GateOptions {
+  return {
+    ...(args.cutoff === undefined ? {} : { cutoff: args.cutoff }),
+    ...(args.unsureBelow === undefined ? {} : { unsureBelow: args.unsureBelow }),
+    ...(args.unsureMargin === undefined ? {} : { unsureMargin: args.unsureMargin }),
   };
 }
 
@@ -224,11 +276,14 @@ Options:
   --staged            use the staged change instead of the working tree
   --format <name>     vitest | jest | node | bun | playwright | rust | go | auto  (default: auto)
   --cutoff <n>        select at or above this score level (default: 2)
+  --unsure-below <n>  a confidence under this counts as unsure (default: 0.5)
+  --unsure-margin <n> rescue an unsure answer this far under the cutoff (default: 1)
   --concurrency <n>   requests in flight at once
   --json              print the full scoring instead of the arguments
   --dry-run           extract and report without calling Jev
   --verify-snapshots  review changed Vitest text snapshots without modifying files
   --replay <file>     re-gate a recorded run offline (default: .jev-test-filter/last.json)
+  --context <file>    read flaker's jev-context: quarantined tests, failure history, gate defaults
   --exec -- <cmd...>  append the arguments to <cmd...> and run it
   -h, --help          this text
 
@@ -293,7 +348,7 @@ async function main(): Promise<number> {
   let res: RunResult;
   if (args.replayPath !== null) {
     const record = await loadRecord(args.replayPath);
-    const selection = replay(record, args.cutoff === undefined ? {} : { cutoff: args.cutoff });
+    const selection = replay(record, gateFlags(args));
     const { buildFilter } = await import("./filter.ts");
     res = {
       selection,
@@ -303,14 +358,26 @@ async function main(): Promise<number> {
       spent: null,
     };
   } else {
+    // Read before anything is asked: a context that cannot be used is a usage
+    // error, and paying for a run it would have changed is worse than stopping.
+    let context: JevContext | null = null;
+    if (args.contextPath !== null) {
+      try {
+        context = await loadContext(args.contextPath);
+      } catch (err: unknown) {
+        process.stderr.write(`jev-test-filter: ${err instanceof Error ? err.message : String(err)}\n`);
+        return 2;
+      }
+    }
     res = await run({
       base: args.base,
       staged: args.staged,
       paths: args.paths,
       format: args.format,
       dryRun: args.dryRun,
+      context,
       ...(args.format === "playwright" && args.exec ? { playwrightCommand: args.exec } : {}),
-      ...(args.cutoff === undefined ? {} : { cutoff: args.cutoff }),
+      ...gateFlags(args),
       ...(args.concurrency === undefined ? {} : { concurrency: args.concurrency }),
     });
     if (shouldSaveRecord(res.record)) await saveRecord(process.cwd(), res.record);

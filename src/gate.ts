@@ -17,7 +17,7 @@
  */
 import { questionId } from "./questions.ts";
 import { testId } from "./types.ts";
-import type { Answer, Selection, TestCase, Verdict } from "./types.ts";
+import type { Answer, RecordGate, Selection, TestCase, Verdict } from "./types.ts";
 
 /**
  * The boundary between "this change cannot alter the outcome" (level 1) and
@@ -36,6 +36,25 @@ export interface GateOptions {
   cutoff?: number;
   unsureBelow?: number;
   unsureMargin?: number;
+}
+
+/**
+ * The values a gate will actually decide under, with every default filled
+ * in, in the spelling a record keeps them in. A record that said only "the
+ * flags that were given" would change meaning the day a default did.
+ */
+export function resolveGate({
+  cutoff = DEFAULT_CUTOFF,
+  unsureBelow = DEFAULT_UNSURE_BELOW,
+  unsureMargin = DEFAULT_UNSURE_MARGIN,
+}: GateOptions = {}): RecordGate {
+  return { cutoff, unsure_below: unsureBelow, unsure_margin: unsureMargin };
+}
+
+/** A recorded or supplied gate as options. Nothing, when there is none. */
+export function gateOptions(g: RecordGate | null | undefined): GateOptions {
+  if (!g) return {};
+  return { cutoff: g.cutoff, unsureBelow: g.unsure_below, unsureMargin: g.unsure_margin };
 }
 
 /** Decide one test. Never returns null: every test gets a side and a reason. */
@@ -61,16 +80,21 @@ export function decide(
  *
  * `answers` is keyed by question id, which is the test's index in `tests`;
  * `touched` is keyed by `testId`, because it is computed from the diff before
- * any question exists.
+ * any question exists; so is `quarantined`, the tests a context put in
+ * `skip`. A quarantined test is decided before anything else, touched
+ * included: it was never asked about, and the quarantine is flaker's decision
+ * that its result means nothing right now.
  */
 export function gate(
   tests: TestCase[],
   answers: Map<string, Answer | null>,
   touched: Set<string>,
   opts: GateOptions = {},
+  quarantined: ReadonlySet<string> = new Set(),
 ): Selection {
-  const verdicts = tests.map((t, i) => {
+  const verdicts = tests.map((t, i): Verdict => {
     const id = questionId(i);
+    if (quarantined.has(testId(t))) return { id, test: t, answer: null, reason: "quarantined", selected: false };
     return decide(id, t, answers.get(id) ?? null, touched.has(testId(t)), opts);
   });
   return {
