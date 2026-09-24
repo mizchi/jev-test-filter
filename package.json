@@ -1,6 +1,6 @@
 {
   "name": "jev-test-filter",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Score every test against a git diff with Jev, and emit the filter arguments your runner already understands",
   "keywords": [
     "test",
