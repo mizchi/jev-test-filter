@@ -31,10 +31,11 @@ import { fullName } from "./filter.ts";
 import { loadDiff } from "./diff.ts";
 import { assessSnapshots, findSnapshotChangesInWorktree, loadSnapshotTestSources, snapshotTestFile } from "./snapshot.ts";
 import type { SnapshotReview } from "./snapshot.ts";
+import { loadContext } from "./context.ts";
 import { loadRecord, RECORD_DIR, RECORD_FILE, replay, run, saveRecord } from "./run.ts";
 import type { RunRecord, RunResult } from "./run.ts";
 import type { GateOptions } from "./gate.ts";
-import type { Framework } from "./types.ts";
+import type { Framework, JevContext } from "./types.ts";
 
 const FORMATS: readonly string[] = ["vitest", "jest", "node", "bun", "playwright", "rust", "go", "auto"];
 
@@ -54,6 +55,7 @@ export interface CliArgs {
   dryRun: boolean;
   verifySnapshots: boolean;
   replayPath: string | null;
+  contextPath: string | null;
   exec: string[] | null;
   help: boolean;
 }
@@ -113,6 +115,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
       "dry-run": { type: "boolean", default: false },
       "verify-snapshots": { type: "boolean", default: false },
       replay: { type: "string" },
+      context: { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
   });
@@ -123,6 +126,16 @@ export function parseCliArgs(argv: string[]): CliArgs {
   }
   if (values["verify-snapshots"] && (exec !== null || values.replay !== undefined)) {
     throw new Error("--verify-snapshots cannot be combined with --exec or --replay");
+  }
+  // Refused rather than ignored: a replay re-gates answers already given to
+  // questions already asked, and a snapshot review asks no per-test question,
+  // so a context could change neither -- and silently doing nothing with a
+  // flag reads as the flag having worked.
+  if (values.context !== undefined && values.replay !== undefined) {
+    throw new Error("--context cannot be combined with --replay; the record already holds the answers its context produced");
+  }
+  if (values.context !== undefined && values["verify-snapshots"]) {
+    throw new Error("--context cannot be combined with --verify-snapshots");
   }
 
   return {
@@ -138,6 +151,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
     dryRun: Boolean(values["dry-run"]),
     verifySnapshots: Boolean(values["verify-snapshots"]),
     replayPath: values.replay === undefined ? null : String(values.replay),
+    contextPath: values.context === undefined ? null : String(values.context),
     exec,
     help: Boolean(values.help),
   };
@@ -269,6 +283,7 @@ Options:
   --dry-run           extract and report without calling Jev
   --verify-snapshots  review changed Vitest text snapshots without modifying files
   --replay <file>     re-gate a recorded run offline (default: .jev-test-filter/last.json)
+  --context <file>    read flaker's jev-context: quarantined tests, failure history, gate defaults
   --exec -- <cmd...>  append the arguments to <cmd...> and run it
   -h, --help          this text
 
@@ -343,12 +358,24 @@ async function main(): Promise<number> {
       spent: null,
     };
   } else {
+    // Read before anything is asked: a context that cannot be used is a usage
+    // error, and paying for a run it would have changed is worse than stopping.
+    let context: JevContext | null = null;
+    if (args.contextPath !== null) {
+      try {
+        context = await loadContext(args.contextPath);
+      } catch (err: unknown) {
+        process.stderr.write(`jev-test-filter: ${err instanceof Error ? err.message : String(err)}\n`);
+        return 2;
+      }
+    }
     res = await run({
       base: args.base,
       staged: args.staged,
       paths: args.paths,
       format: args.format,
       dryRun: args.dryRun,
+      context,
       ...(args.format === "playwright" && args.exec ? { playwrightCommand: args.exec } : {}),
       ...gateFlags(args),
       ...(args.concurrency === undefined ? {} : { concurrency: args.concurrency }),

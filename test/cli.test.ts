@@ -169,3 +169,33 @@ test("gateFlags carries only the gate values the command line set", () => {
     { cutoff: 1, unsureBelow: 0.2, unsureMargin: 0.5 },
   );
 });
+
+test("parseCliArgs reads --context", () => {
+  assert.equal(parseCliArgs(["--context", ".flaker/context.json"]).contextPath, ".flaker/context.json");
+  assert.equal(parseCliArgs([]).contextPath, null);
+});
+
+test("--context is refused where it could change nothing", () => {
+  // A replay re-gates answers already given, under the questions they were
+  // given to; a context cannot change either.
+  assert.throws(() => parseCliArgs(["--replay", "--context", "c.json"]), /--context cannot be combined with --replay/);
+  assert.throws(() => parseCliArgs(["--verify-snapshots", "--context", "c.json"]), /--context cannot be combined/);
+});
+
+test("a context of another version exits 2 before anything is asked", async () => {
+  const { spawnSync, execFileSync } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const cwd = mkdtempSync(join(tmpdir(), "jev-cli-context-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd });
+    execFileSync("git", ["-c", "user.name=Eval", "-c", "user.email=eval@example.com", "commit", "-q", "--allow-empty", "-m", "initial"], { cwd });
+    writeFileSync(join(cwd, "context.json"), JSON.stringify({ version: 2, digest: "sha256:x" }));
+    const cli = new URL("../src/cli.ts", import.meta.url).pathname;
+    const res = spawnSync(process.execPath, [cli, "--context", "context.json", "--json"], { cwd, encoding: "utf8", env: { ...process.env, TYPESAFE_API_KEY: "" } });
+    assert.equal(res.status, 2, res.stderr);
+    assert.match(res.stderr, /unsupported context version 2; expected 1/);
+    assert.equal(res.stdout, "");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
