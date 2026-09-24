@@ -10,6 +10,7 @@ import { replay, run } from "../src/run.ts";
 import type { AskClient } from "../src/jev.ts";
 import type { ScoreQuestion } from "../src/questions.ts";
 import type { JevContext, TestCase } from "../src/types.ts";
+import { gitEnv } from "./git-env.ts";
 
 const SAMPLE = {
   version: 1,
@@ -115,7 +116,7 @@ describe("A", () => {
 `;
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", ["-c", "user.name=Eval", "-c", "user.email=eval@example.com", ...args], { cwd, encoding: "utf8" }).trim();
+  return execFileSync("git", ["-c", "user.name=Eval", "-c", "user.email=eval@example.com", ...args], { cwd, encoding: "utf8", env: gitEnv() }).trim();
 }
 
 /** A client that answers every question it is asked with one score, and keeps them. */

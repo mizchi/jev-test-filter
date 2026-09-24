@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { loadRecord, replay, run, saveRecord, RECORD_DIR, RECORD_FILE, RECORDS_SUBDIR } from "../src/run.ts";
 import type { AskClient } from "../src/jev.ts";
 import type { RunRecordV1, RunRecordV2, TestCase } from "../src/types.ts";
+import { gitEnv } from "./git-env.ts";
 
 function mk(name: string, over: Partial<TestCase> = {}): TestCase {
   return { file: "a.test.ts", titlePath: [name], line: 1, endLine: 2, framework: "vitest", dynamic: false, ...over };
@@ -34,7 +35,7 @@ describe("Cart", () => {
 `;
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", ["-c", "user.name=Eval", "-c", "user.email=eval@example.com", ...args], { cwd, encoding: "utf8" }).trim();
+  return execFileSync("git", ["-c", "user.name=Eval", "-c", "user.email=eval@example.com", ...args], { cwd, encoding: "utf8", env: gitEnv() }).trim();
 }
 
 /** Two commits, so `--base HEAD~1` has somewhere to point. */
