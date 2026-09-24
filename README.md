@@ -215,7 +215,7 @@ like, because both mean "no arguments". The exit code tells them apart:
 | --- | --- |
 | 0 | Arguments were printed, or everything is to be run and there are none. Run the command. |
 | 3 | Nothing was selected. Do not run the command; there is nothing to run. |
-| 2 | Bad arguments, e.g. `unknown --format mocha`. |
+| 2 | Bad arguments, e.g. `unknown --format mocha`, a gate value that is not a number, or a `--context` file that is missing, malformed, or not version 1. |
 | 1 | The tool failed, e.g. the tests span more than one framework and no `--format` was given. |
 
 So the stdout form is used like this:
@@ -429,8 +429,8 @@ Two rules sit on top of that, and both exist to fail towards running a test
 rather than skipping it:
 
 - **Confidence routes, it does not gate.** A test that scores under the cutoff,
-  but within 1.0 of it, and that the model answered with a confidence below
-  0.5, is selected anyway. Running a test that did not need to run costs
+  but within 1.0 of it (`--unsure-margin`), and that the model answered with a
+  confidence below 0.5 (`--unsure-below`), is selected anyway. Running a test that did not need to run costs
   seconds; skipping one that did costs a release.
 - **No answer is not a passing grade.** A missing or malformed answer selects
   the test.
@@ -442,7 +442,9 @@ across invocations, take it once and re-derive it with `--replay`.
 
 The `reason` field on each test in `--json` says which rule decided it:
 `touched` (the test's own body is inside the diff — never asked about),
-`dynamic` (the title is not a literal), `scored`, `unsure`, `missing`, `below`.
+`dynamic` (the title is not a literal), `scored`, `unsure`, `missing`, `below`,
+and `quarantined` (the `--context` put the test in `skip` — never asked about,
+never selected).
 
 ## When it runs everything anyway
 
@@ -488,17 +490,25 @@ framework with no `--format`, which exits 1 (see Known limitations).
 --staged            use the staged change instead of the working tree
 --format <name>     vitest | jest | node | bun | playwright | rust | go | auto  (default: auto)
 --cutoff <n>        select at or above this score level (default: 2)
+--unsure-below <n>  a confidence under this counts as unsure (default: 0.5)
+--unsure-margin <n> rescue an unsure answer this far under the cutoff (default: 1)
 --concurrency <n>   requests in flight at once (default: 32)
 --json              print the full scoring instead of the arguments
 --dry-run           extract and report without calling Jev
 --verify-snapshots  review changed text snapshots without modifying files
 --replay <file>     re-gate a recorded run offline (default: .jev-test-filter/last.json)
+--context <file>    read flaker's jev-context: quarantined tests, failure history, gate defaults
 --exec -- <cmd...>  append the arguments to <cmd...> and run it
 -h, --help          the help text
 ```
 
 Positional arguments restrict which test files are considered, e.g.
 `jev-test-filter --base main src/cart test/cart.test.ts`.
+
+The three gate values come from, in order of precedence: the flag, then the
+`--context` (or, under `--replay`, the record), then the default. A value that
+is not a finite number is refused with exit 2 rather than read as `NaN`, which
+would deselect every test.
 
 ## Replaying a run offline
 
@@ -514,16 +524,95 @@ $ jev-test-filter --replay --cutoff 1.0 > /dev/null
 jev-test-filter: 5/110 tests selected (pattern)
 ```
 
+A replay re-gates under the gate the record was decided under, so a bare
+`--replay` reproduces the run's selection; `--cutoff`, `--unsure-below` and
+`--unsure-margin` replace the recorded values one by one. A record written by
+0.1 kept no gate and replays under the defaults, as it always did.
+
 A replay reports `"spent": null` because it spent nothing, and it needs no API
 key. It writes no new record, and `--format` has no effect on it — the
-framework comes from the record.
+framework comes from the record. `--context` cannot be combined with it: the
+record already holds the answers its context produced.
 
-Two things to know about the record. It is one file per repository, and every
-successful run replaces it — but **only** a successful one: a run that falls
-back writes nothing, so `--replay` always has the last scoring that actually
-completed to work on, and an unlucky `HTTP 529` cannot destroy it. And the
-record holds every test's title and file path, so add `.jev-test-filter/` to
-your `.gitignore`. It never holds the API key.
+Every successful run writes the record twice: to `.jev-test-filter/last.json`,
+which the next run replaces, and to `.jev-test-filter/records/<head_sha>.json`,
+which only another run of the same commit replaces — that is the one a CI
+result for the commit is compared with. **Only** a successful run writes
+either: a run that falls back writes nothing, so `--replay` always has the
+last scoring that actually completed to work on, and an unlucky `HTTP 529`
+cannot destroy it. The record holds every test's title and file path, so add
+`.jev-test-filter/` to your `.gitignore`. It never holds the API key.
+
+### Record format (version 2)
+
+```json
+{
+  "version": 2,
+  "createdAt": "2026-09-24T00:00:00.000Z",
+  "base": "main",
+  "head_sha": "4c1d…",
+  "base_sha": "9e0a…",
+  "context_digest": "sha256:…",
+  "gate": { "cutoff": 2, "unsure_below": 0.5, "unsure_margin": 1 },
+  "framework": "vitest",
+  "tests": [{ "file": "test/a.test.ts", "titlePath": ["A", "b"], "line": 3, "endLine": 5, "framework": "vitest", "dynamic": false }],
+  "touched": [],
+  "quarantined": [],
+  "answers": { "q0000": { "value": 1, "confidence": 0.8 } },
+  "fallback": null
+}
+```
+
+- `head_sha` is `git rev-parse HEAD`, `null` when there is no commit.
+- `base_sha` is the commit `--base` resolved to, `null` without `--base`.
+- `context_digest` is the `digest` of the `--context` file, `null` without one.
+- `gate` is the values the run actually decided under, defaults filled in.
+- `touched` and `quarantined` hold test ids (file, title path and line); the
+  answers are keyed by question id, which is the test's index in `tests`.
+
+A version 1 record is still read, with those fields as `null` and nothing
+quarantined. The type is exported as `RunRecordV2` from
+`jev-test-filter/types`.
+
+## Context from flaker
+
+[flaker](https://github.com/mizchi/flaker) keeps the history this tool cannot
+see, and projects it into one file for it:
+
+```
+flaker export --projection jev-context -o .flaker/context.json
+jev-test-filter --base main --context .flaker/context.json --exec -- vitest run
+```
+
+```json
+{
+  "version": 1,
+  "digest": "sha256:…",
+  "generated_at": "2026-09-24T00:00:00.000Z",
+  "gate": { "cutoff": 2.0, "unsure_below": 0.5, "unsure_margin": 1.0, "basis": { "records": 42 } },
+  "skip": [{ "file": "tests/a.test.ts", "title_path": ["A", "b"], "reason": "quarantined" }],
+  "tests": [{ "file": "tests/cli/init.test.ts", "title_path": ["init", "writes toml"], "failed_with": ["src/cli/config.ts"], "missed": 2 }]
+}
+```
+
+- **`gate`** supplies the defaults for `--cutoff`, `--unsure-below` and
+  `--unsure-margin`. A flag still wins. The gate itself stays here: flaker
+  only suggests values, it never decides a selection.
+- **`skip`** removes a test from the candidates. It is not asked about, is
+  not selected even if the diff touched it, and is reported with
+  `reason: "quarantined"`.
+- **`tests[].failed_with`** is added to that test's question, and only
+  that test's, as one sentence under `instructions.history`: `This test
+  previously failed when src/cli/config.ts changed.` It is a fact, not a
+  threshold; `missed` is carried but never put into a question. A test the
+  context says nothing about is asked exactly what it was asked without one.
+
+Entries are matched on `file` + `title_path`, and on `project` when the entry
+names one (an entry without a `project` covers the test in every Playwright
+project) — never on the line, which moves with every edit above the test.
+Anything other than `version: 1`, or a shape that does not validate, exits 2
+before a question is asked. The record keeps the context's `digest`, because
+a hint changes the question and runs are only comparable under the same one.
 
 ## Cost and latency
 

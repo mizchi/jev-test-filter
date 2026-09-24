@@ -122,14 +122,17 @@ esac
 
 ## Tuning without paying again
 
-Each successful run writes `.jev-test-filter/last.json`. A run that falls back
-leaves it alone, so the last *complete* scoring is always there.
+Each successful run writes `.jev-test-filter/last.json`, and the same record to
+`.jev-test-filter/records/<head_sha>.json`. A run that falls back leaves both
+alone, so the last *complete* scoring is always there.
 
 ```
 jev-test-filter --replay .jev-test-filter/last.json --cutoff 1.0 --json
 ```
 
-Re-gates offline, no request, `spent: null`. Lower the cutoff to select more.
+Re-gates offline, no request, `spent: null`, under the gate the record was
+decided under unless `--cutoff`, `--unsure-below` or `--unsure-margin` says
+otherwise. Lower the cutoff to select more.
 Scoring is not deterministic — boundary tests move between runs — so if a
 stable selection matters, take it once and re-derive it with `--replay`.
 
