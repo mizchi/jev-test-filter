@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { AskClient } from "../src/jev.ts";
+import { gitEnv } from "./git-env.ts";
 
 const DIFF = [
   "diff --git a/src/cart.test.ts b/src/cart.test.ts",
@@ -101,12 +102,12 @@ test("外部スナップショットから対応するテスト本体を読み�
 test("コミット差分では作業ツリーではなく HEAD のテスト本体を読む", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "jev-snapshot-revision-"));
   try {
-    execFileSync("git", ["init", "-q"], { cwd });
+    execFileSync("git", ["init", "-q"], { cwd, env: gitEnv(), env: gitEnv() });
     await mkdir(join(cwd, "src"));
     const file = join(cwd, "src/cart.test.ts");
     await writeFile(file, "test('cart', () => double(2));\n");
-    execFileSync("git", ["add", "."], { cwd });
-    execFileSync("git", ["-c", "user.name=Eval", "-c", "user.email=eval@example.com", "commit", "-qm", "baseline"], { cwd });
+    execFileSync("git", ["add", "."], { cwd, env: gitEnv(), env: gitEnv() });
+    execFileSync("git", ["-c", "user.name=Eval", "-c", "user.email=eval@example.com", "commit", "-qm", "baseline"], { cwd, env: gitEnv(), env: gitEnv() });
     await writeFile(file, "test('cart', () => double(99));\n");
     const changes = [{ file: "src/__snapshots__/cart.test.ts.snap", kind: "external" as const }];
     assert.match((await loadSnapshotTestSources(cwd, changes, 24_000, "HEAD")).sources["src/cart.test.ts"]!, /double\(2\)/);

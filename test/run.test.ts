@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { AskClient } from "../src/jev.ts";
 import { testId } from "../src/types.ts";
 import type { TestCase } from "../src/types.ts";
+import { gitEnv } from "./git-env.ts";
 
 function mk(file: string, path: string[], over: Partial<TestCase> = {}): TestCase {
   return { file, titlePath: path, line: 1, endLine: 2, framework: "vitest", dynamic: false, ...over };
@@ -81,8 +82,8 @@ test("replay re-gates a record without a client", () => {
 test("Playwright の一覧取得に失敗したら絞り込まず全件を実行する", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "jev-playwright-fallback-"));
   try {
-    execFileSync("git", ["init", "-q"], { cwd });
-    execFileSync("git", ["-c", "user.name=Eval", "-c", "user.email=eval@example.com", "commit", "-q", "--allow-empty", "-m", "initial"], { cwd });
+    execFileSync("git", ["init", "-q"], { cwd, env: gitEnv(), env: gitEnv() });
+    execFileSync("git", ["-c", "user.name=Eval", "-c", "user.email=eval@example.com", "commit", "-q", "--allow-empty", "-m", "initial"], { cwd, env: gitEnv(), env: gitEnv() });
     const res = await run({ cwd, format: "playwright", playwrightCommand: ["/missing/playwright"], dryRun: true });
     assert.equal(res.filter.mode, "all");
     assert.match(res.selection.fallback!, /Playwright test listing failed/);
