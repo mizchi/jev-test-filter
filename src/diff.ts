@@ -149,6 +149,7 @@ export interface Diff {
   text: string;
   /** `git diff --stat`, which survives truncation of the text. */
   stat: string;
+  /** Post-image ranges keyed relative to the requested cwd, like discovered tests. */
   ranges: ChangedRanges;
 }
 
@@ -167,7 +168,7 @@ export async function loadDiff({ cwd = process.cwd(), base = null, staged = fals
   // from the ranges, because a deleted file has no post-image line for a test
   // body to overlap; but removing a source file is exactly the kind of change
   // the model has to see, so it stays in the text.
-  const common = ["--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/"];
+  const common = ["--no-relative", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/"];
   const range: string[] = [];
   if (staged) range.push("--cached");
   if (base) range.push(`${base}...HEAD`);
@@ -175,7 +176,16 @@ export async function loadDiff({ cwd = process.cwd(), base = null, staged = fals
 
   const text = await git(["diff", "--unified=0", ...common, ...range], cwd);
   const stat = await git(["diff", "--stat", ...common, ...range], cwd);
-  return { text, stat, ranges: parseUnifiedDiff(text) };
+  // Git diff paths are repository-relative, while test discovery uses cwd.
+  // Rebase only the lookup keys: sibling-workspace changes must stay in the
+  // text and stat passed to the model.
+  const prefix = (await git(["rev-parse", "--show-prefix"], cwd)).replace(/\r?\n$/, "");
+  const parsed = parseUnifiedDiff(text);
+  const ranges = prefix === "" ? parsed : new Map(
+    [...parsed].filter(([file]) => file.startsWith(prefix))
+      .map(([file, changed]) => [file.slice(prefix.length), changed]),
+  );
+  return { text, stat, ranges };
 }
 
 /**
