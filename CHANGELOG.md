@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.5
+
+### Fixed
+
+- Select an edited test as `touched` when the command runs from a subdirectory of the repository. `git diff` names files from the repository root while discovery names them from the working directory, so the two never matched and a confident low score could deselect the test that was just changed. The diff and stat sent to the model still cover the whole repository, and a user's `diff.relative` no longer narrows them. (#3, thanks @kinjo1130)
+- Find changed inline snapshots, and load their test sources, when `--verify-snapshots` runs from a subdirectory. Paths given on the command line are now read relative to the working directory.
+
+### Changed
+
+- Update `@ast-grep/napi` to 0.51, and build with TypeScript 7.
+
 ## 0.1.4
 
 ### Added
