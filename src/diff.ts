@@ -6,6 +6,7 @@
  * which is the `state` every question is asked against.
  */
 import { execFile } from "node:child_process";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -151,6 +152,10 @@ export interface Diff {
   stat: string;
   /** Post-image ranges keyed relative to the requested cwd, like discovered tests. */
   ranges: ChangedRanges;
+  /** The requested cwd relative to the repository root: "" at the root, else ending in "/". */
+  prefix: string;
+  /** The repository root. Paths in `text` and `stat` are relative to this, not to cwd. */
+  root: string;
 }
 
 /**
@@ -185,7 +190,8 @@ export async function loadDiff({ cwd = process.cwd(), base = null, staged = fals
     [...parsed].filter(([file]) => file.startsWith(prefix))
       .map(([file, changed]) => [file.slice(prefix.length), changed]),
   );
-  return { text, stat, ranges };
+  const root = resolve(cwd, ...prefix.split("/").filter(Boolean).map(() => ".."));
+  return { text, stat, ranges, prefix, root };
 }
 
 /**
