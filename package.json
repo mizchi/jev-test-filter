@@ -1,6 +1,6 @@
 {
   "name": "jev-test-filter",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Score every test against a git diff with Jev, and emit the filter arguments your runner already understands",
   "keywords": [
     "test",
@@ -64,12 +64,11 @@
     "@ast-grep/lang-go": "^0.0.6",
     "@ast-grep/lang-ruby": "^0.0.7",
     "@ast-grep/lang-rust": "^0.0.7",
-    "@ast-grep/napi": "^0.40.0"
+    "@ast-grep/napi": "^0.51.3"
   },
   "devDependencies": {
-    "@secretlint/secretlint-rule-preset-recommend": "^9.0.0",
-    "@types/node": "^24.0.0",
-    "secretlint": "^9.0.0",
-    "typescript": "^5.9.0"
+    "@types/node": "^24",
+    "secretlint": "^14.0.1",
+    "typescript": "^7.0.2"
   }
 }
