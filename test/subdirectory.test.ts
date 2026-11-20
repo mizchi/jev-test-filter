@@ -82,3 +82,30 @@ test("run selects the edited test as touched despite a confident zero model scor
   assert.equal(result.selection.verdicts.find(v => v.test.titlePath[0] === "unchanged")?.reason, "below");
   assert.match(context, /neighbor/);
 });
+
+test("--verify-snapshots from a subdirectory finds the changed inline snapshot and its source", async () => {
+  const { collectSnapshotChanges } = await import("../src/cli.ts");
+  const { root, git } = fixture("working");
+  const body = (total: number) => [
+    "import { test, expect } from 'vitest';",
+    "test('cart', () => {",
+    `  expect({ total: ${total} }).toMatchInlineSnapshot(\`{`,
+    `    total: ${total},`,
+    "  }`);",
+    "});",
+    "",
+  ].join("\n");
+  writeFileSync(join(root, "pkg/src/cart.test.ts"), body(1));
+  git("add", "."); git("commit", "-qm", "snapshot");
+  // Only the value line changes, so the diff text alone does not name the call.
+  writeFileSync(join(root, "pkg/src/cart.test.ts"), body(1).replace("    total: 1,", "    total: 2,"));
+  const inline = [{ file: "pkg/src/cart.test.ts", kind: "inline" }];
+  for (const paths of [[], ["src"], ["./src/cart.test.ts"]]) {
+    const found = await collectSnapshotChanges({ base: null, staged: false, paths }, join(root, "pkg"));
+    assert.deepEqual(found.changes, inline);
+    assert.match(found.context.sources["pkg/src/cart.test.ts"]!, /total: 2,/);
+    assert.deepEqual(found.context.omitted, []);
+  }
+  const elsewhere = await collectSnapshotChanges({ base: null, staged: false, paths: ["lib"] }, join(root, "pkg"));
+  assert.deepEqual(elsewhere.changes, []);
+});

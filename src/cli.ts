@@ -23,14 +23,15 @@
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { displayName } from "./questions.ts";
 import { fullName } from "./filter.ts";
 import { loadDiff } from "./diff.ts";
+import type { Diff } from "./diff.ts";
 import { assessSnapshots, findSnapshotChangesInWorktree, loadSnapshotTestSources, snapshotTestFile } from "./snapshot.ts";
-import type { SnapshotReview } from "./snapshot.ts";
+import type { SnapshotChange, SnapshotReview, SnapshotTestSources } from "./snapshot.ts";
 import { loadContext } from "./context.ts";
 import { loadRecord, RECORD_DIR, RECORD_FILE, replay, run, saveRecord } from "./run.ts";
 import type { RunRecord, RunResult } from "./run.ts";
@@ -314,6 +315,29 @@ Environment:
   TYPESAFE_API_KEY    required unless --dry-run or --replay
 `;
 
+/**
+ * The snapshot changes under review, narrowed to the paths asked for, with the
+ * test sources that explain them.
+ */
+export async function collectSnapshotChanges(
+  args: Pick<CliArgs, "base" | "staged" | "paths">, cwd = process.cwd(),
+): Promise<{ diff: Diff; changes: SnapshotChange[]; context: SnapshotTestSources }> {
+  const diff = await loadDiff({ cwd, base: args.base, staged: args.staged });
+  const revision = args.base ? "HEAD" : args.staged ? ":" : null;
+  // The diff names files from the repository root, so they are read from there;
+  // the paths asked for are relative to cwd and are rebased to match.
+  const changes = (await findSnapshotChangesInWorktree(diff.text, diff.root, revision)).filter((change) =>
+    args.paths.length === 0 || args.paths.some((path) => {
+      const normalized = posix.normalize(`${diff.prefix}${path}`).replace(/\/$/, "");
+      if (normalized === ".") return true;
+      const testFile = snapshotTestFile(change);
+      return change.file === normalized || change.file.startsWith(`${normalized}/`)
+        || testFile === normalized || testFile?.startsWith(`${normalized}/`);
+    }));
+  const context = await loadSnapshotTestSources(diff.root, changes, 24_000, revision);
+  return { diff, changes, context };
+}
+
 async function main(): Promise<number> {
   let args: CliArgs;
   try {
@@ -328,16 +352,7 @@ async function main(): Promise<number> {
   }
 
   if (args.verifySnapshots) {
-    const diff = await loadDiff({ cwd: process.cwd(), base: args.base, staged: args.staged });
-    const revision = args.base ? "HEAD" : args.staged ? ":" : null;
-    const changes = (await findSnapshotChangesInWorktree(diff.text, process.cwd(), revision)).filter((change) =>
-      args.paths.length === 0 || args.paths.some((path) => {
-        const normalized = path.replace(/^\.\//, "").replace(/\/$/, "");
-        const testFile = snapshotTestFile(change);
-        return change.file === normalized || change.file.startsWith(`${normalized}/`)
-          || testFile === normalized || testFile?.startsWith(`${normalized}/`);
-      }));
-    const context = await loadSnapshotTestSources(process.cwd(), changes, 24_000, revision);
+    const { diff, changes, context } = await collectSnapshotChanges(args);
     const review = args.dryRun
       ? { entries: changes.map((change) => ({ ...change, status: "unknown" as const, score: null, confidence: null })), error: null, spent: null }
       : await assessSnapshots(diff.text, diff.stat, undefined, changes, context);
